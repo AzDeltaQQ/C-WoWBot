@@ -12,6 +12,8 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
+#include <cmath> // Include for sqrtf
+#include <memory> // Include for std::shared_ptr
 
 #pragma comment(lib, "d3d9.lib")
 
@@ -33,9 +35,12 @@ constexpr DWORD GET_OBJECT_PTR_BY_GUID_INNER_ADDR = 0x004D4BB0;
 constexpr DWORD ADDR_CurrentTargetGUID = 0x00BD07B0; // Address for current target GUID
 
 // Additional GUI tabs and state
-bool show_objects_tab = true;
-std::vector<std::string> object_list_strings;
+// Store shared_ptrs to WowObjects instead of just strings
+std::vector<std::shared_ptr<WowObject>> object_list_pointers;
 int selected_object_index = -1;
+// Keep track of the actual selected object pointer for easy access
+std::shared_ptr<WowObject> selected_object_ptr = nullptr; 
+
 static int spellIdToCast = 0; // Spell ID input field
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -69,58 +74,83 @@ LRESULT APIENTRY WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     return CallWindowProc(oWndProc, hwnd, uMsg, wParam, lParam);
 }
 
-// Function to update the object list for the GUI
-void UpdateObjectListForGUI() {
-    object_list_strings.clear();
+// Helper function to calculate distance between two points
+inline float CalculateDistance(const Vector3& p1, const Vector3& p2) {
+    float dx = p1.x - p2.x;
+    float dy = p1.y - p2.y;
+    float dz = p1.z - p2.z;
+    return sqrtf(dx*dx + dy*dy + dz*dz);
+}
+
+// Function to update the object list pointers (formerly UpdateObjectListForGUI)
+void UpdateObjectPointerList() {
+    object_list_pointers.clear();
     selected_object_index = -1;
+    selected_object_ptr = nullptr; // Clear selected pointer too
 
-    LogMessage("UpdateObjectListForGUI: Starting update...");
+    LogMessage("UpdateObjectPointerList: Starting update...");
     ObjectManager* objMgr = ObjectManager::GetInstance();
-    objMgr->Update();
-    LogMessage("UpdateObjectListForGUI: ObjectManager::Update() finished.");
-
-    auto objects_map = objMgr->GetObjects();
-    LogMessage("UpdateObjectListForGUI: Retrieved " + std::to_string(objects_map.size()) + " objects from cache.");
-
-    for (const auto& pair : objects_map) {
-        const auto& obj = pair.second;
-        if (!obj) {
-            LogMessage("UpdateObjectListForGUI: Skipped null object pointer in cache.");
-            continue;
-        }
-        
-        std::stringstream ssEntry;
-        WGUID guid = obj->GetGUID();
-        ssEntry << "GUID: 0x" << std::hex << std::setw(16) << std::setfill('0') << GuidToUint64(guid) << " | ";
-
-        std::string name = "[Error]";
-        try { name = obj->GetName(); } catch(...) { /* Ignore name read error */ }
-        if (name.empty() || name == "[Error Reading Name]") {
-            name = "[Unnamed/Error]";
-        }
-        ssEntry << "Name: '" << name << "' | ";
-
-        std::string typeStr = "(Unknown)";
-        WowObjectType type = OBJECT_NONE;
-        try { type = obj->GetType(); } catch(...) { /* Ignore type read error */ }
-        
-        ssEntry << "Type: " << static_cast<int>(type);
-        switch (type) { 
-            case OBJECT_PLAYER: typeStr = "(Player)"; break;
-            case OBJECT_UNIT: typeStr = "(Unit)"; break;
-            case OBJECT_GAMEOBJECT: typeStr = "(GameObject)"; break;
-            case OBJECT_ITEM: typeStr = "(Item)"; break;
-            case OBJECT_CONTAINER: typeStr = "(Container)"; break;
-            case OBJECT_DYNAMICOBJECT: typeStr = "(DynObject)"; break;
-            case OBJECT_CORPSE: typeStr = "(Corpse)"; break;
-            case OBJECT_NONE: typeStr = "(None?)"; break;
-            default: break; 
-        }
-        ssEntry << typeStr;
-
-        object_list_strings.push_back(ssEntry.str());
+    if (!objMgr || !objMgr->IsInitialized()) {
+        LogMessage("UpdateObjectPointerList: Aborted - ObjectManager not ready.");
+        return;
     }
-    LogMessage("UpdateObjectListForGUI: Finished creating display list.");
+
+    objMgr->Update(); // Refresh the ObjectManager's internal cache
+    LogMessage("UpdateObjectPointerList: ObjectManager::Update() finished.");
+
+    // Get local player position for distance check
+    Vector3 playerPos = {0, 0, 0};
+    bool playerPosValid = false;
+    auto player = objMgr->GetLocalPlayer();
+    if (player) {
+        player->UpdateDynamicData(); // Ensure player position is fresh
+        playerPos = player->GetPosition();
+        if (playerPos.x != 0.0f || playerPos.y != 0.0f || playerPos.z != 0.0f) {
+            playerPosValid = true;
+        }
+    }
+    if (!playerPosValid) {
+         LogMessage("UpdateObjectPointerList: Warning - Could not get valid player position for distance filtering.");
+    }
+
+    auto objects_map = objMgr->GetObjects(); // Get the map of shared_ptrs
+    LogMessage("UpdateObjectPointerList: Retrieved " + std::to_string(objects_map.size()) + " raw objects from cache.");
+
+    object_list_pointers.reserve(objects_map.size()); // Reserve potential max space
+    
+    constexpr float MAX_DISTANCE_FILTER = 1000.0f;
+    
+    for (const auto& pair : objects_map) {
+        if (!pair.second) continue; // Skip null pointers
+        
+        auto& objPtr = pair.second;
+        WowObjectType objType = objPtr->GetType();
+
+        // Always include items, regardless of distance
+        if (objType == OBJECT_ITEM) {
+            object_list_pointers.push_back(objPtr);
+            continue; 
+        }
+
+        // For non-items, filter by distance if player position is valid
+        if (playerPosValid) {
+            objPtr->UpdateDynamicData(); // Ensure object position is updated before checking distance
+            Vector3 objPos = objPtr->GetPosition();
+            float distance = CalculateDistance(playerPos, objPos);
+
+            if (distance <= MAX_DISTANCE_FILTER) {
+                object_list_pointers.push_back(objPtr);
+            }
+        } else {
+            // If player position is invalid, maybe include all non-items?
+            // Or exclude them? Let's include them for now.
+            object_list_pointers.push_back(objPtr); 
+        }
+    }
+    LogMessage("UpdateObjectPointerList: Finished filtering. Added " + std::to_string(object_list_pointers.size()) + " objects to GUI list.");
+    
+    // Optional: Sort the list here if desired (e.g., by distance or name)
+    // std::sort(object_list_pointers.begin(), ...);
 }
 
 HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
@@ -188,12 +218,22 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
                 if (objMgr->IsInitialized()) {
                     auto player = objMgr->GetLocalPlayer();
                     if (player) {
+                       player->UpdateDynamicData(); // Update player data every frame
+
                        ImGui::Text("Local Player: %s", player->GetName().c_str());
                        Vector3 pos = player->GetPosition();
                        ImGui::Text("Position: %.2f, %.2f, %.2f", pos.x, pos.y, pos.z);
                        ImGui::Text("Facing: %.2f", player->GetFacing());
-                       ImGui::Text("Health: %d / %d", player->GetHealth(), player->GetMaxHealth());
-                       ImGui::Text("Level: %d", player->GetLevel());
+                       // Cast to WowUnit to access unit-specific data
+                       auto playerUnit = std::dynamic_pointer_cast<WowUnit>(player);
+                       if (playerUnit) {
+                           ImGui::Text("Health: %d / %d", playerUnit->GetHealth(), playerUnit->GetMaxHealth());
+                           ImGui::Text("%s: %d / %d", playerUnit->GetPowerTypeString().c_str(), playerUnit->GetPower(), playerUnit->GetMaxPower());
+                           ImGui::Text("Level: %d", playerUnit->GetLevel());
+                           ImGui::Text("Flags: 0x%X", playerUnit->GetUnitFlags());
+                           ImGui::Text("Casting: %d", playerUnit->GetCastingSpellId());
+                           ImGui::Text("Channeling: %d", playerUnit->GetChannelSpellId());
+                       }
                     } else {
                         ImGui::Text("Local player object not found in cache/lookup.");
                     }
@@ -203,40 +243,119 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
                 ImGui::EndTabItem();
             }
             
-            // Objects tab
+            // Objects tab - Updated Drawing Logic
             if (ImGui::BeginTabItem("Objects")) {
-                // Only allow refresh if initialized
+                // Refresh button now calls UpdateObjectPointerList
                 if (!objMgr->IsInitialized()) {
                     ImGui::TextDisabled("Refresh Objects (Initializing...)");
                 } else {
                     if (ImGui::Button("Refresh Objects")) {
-                        UpdateObjectListForGUI();
+                        UpdateObjectPointerList(); // Update the pointer list
                     }
                 }
                 ImGui::SameLine();
-                ImGui::Text("%zu objects found", object_list_strings.size());
+                ImGui::Text("%zu objects found", object_list_pointers.size());
                 
-                ImGui::BeginChild("ObjectList", ImVec2(0, 150), true);
-                if (object_list_strings.empty()) {
-                    ImGui::Text(objMgr->IsInitialized() ? "No objects found or list not refreshed." : "Object Manager not initialized.");
-                } else {
-                    for (size_t i = 0; i < object_list_strings.size(); ++i) {
-                        if (ImGui::Selectable(object_list_strings[i].c_str(), selected_object_index == static_cast<int>(i))) {
-                            selected_object_index = static_cast<int>(i);
+                // Get local player pos once for distance calculation - Moved outside list child
+                Vector3 playerPos = {0, 0, 0};
+                bool playerPosValid = false;
+                if (objMgr->IsInitialized()) { // Check again in case it changed
+                    auto player = objMgr->GetLocalPlayer();
+                    if (player) {
+                        // Ensure player data is reasonably fresh for position calculation
+                        player->UpdateDynamicData(); 
+                        playerPos = player->GetPosition(); // Use cached position
+                        if (playerPos.x != 0.0f || playerPos.y != 0.0f || playerPos.z != 0.0f) {
+                             playerPosValid = true;
                         }
                     }
                 }
-                ImGui::EndChild();
+
+                // Dynamic list rendering
+                float listHeight = ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing() * 4; // Leave more space for details
+                ImGui::BeginChild("ObjectList", ImVec2(0, listHeight > 0 ? listHeight : 100), true);
                 
-                // Display selected object details
-                if (objMgr->IsInitialized() && selected_object_index >= 0 && static_cast<size_t>(selected_object_index) < object_list_strings.size()) {
-                    ImGui::Separator();
-                    ImGui::Text("Selected Object Info (from list string):");
-                    ImGui::TextWrapped("%s", object_list_strings[selected_object_index].c_str());
-                } else if (selected_object_index >= 0) {
-                     ImGui::Text("Object details unavailable (Manager not ready?).");
+                if (object_list_pointers.empty()) {
+                    ImGui::Text(objMgr->IsInitialized() ? "No objects found or list not refreshed." : "Object Manager not initialized.");
+                } else {
+                    // Player pos is calculated above now
+                    for (size_t i = 0; i < object_list_pointers.size(); ++i) {
+                        const auto& objPtr = object_list_pointers[i];
+                        if (!objPtr) continue;
+
+                        WowObjectType currentObjType = objPtr->GetType();
+
+                        // Generate display string on the fly
+                        std::stringstream ssLabel;
+                        ssLabel << "GUID: 0x" << std::hex << std::setw(16) << std::setfill('0') << GuidToUint64(objPtr->GetGUID()) << " | ";
+                        ssLabel << "Name: '" << objPtr->GetName() << "' | "; 
+                        ssLabel << "Type: " << objPtr->GetType();
+
+                        // Add distance, handling OBJECT_ITEM specifically
+                        if (currentObjType == OBJECT_ITEM) {
+                            ssLabel << " | Dist: N/A";
+                        } else if (playerPosValid) {
+                            // Only calculate/show distance for non-items if player pos is valid
+                            objPtr->UpdateDynamicData(); // Ensure position is current for list display
+                            float distance = CalculateDistance(playerPos, objPtr->GetPosition());
+                            ssLabel << " | Dist: " << std::fixed << std::setprecision(1) << distance;
+                        } else {
+                             ssLabel << " | Dist: ?"; // Indicate unknown distance if player pos invalid
+                        }
+
+                        std::string label = ssLabel.str();
+                        if (ImGui::Selectable(label.c_str(), selected_object_index == i)) {
+                            selected_object_index = i;
+                            selected_object_ptr = objPtr; // Store the shared_ptr
+                        }
+                    }
                 }
-                
+                ImGui::EndChild(); // End ObjectList
+
+                // Display details for the selected object
+                ImGui::Separator();
+                ImGui::Text("Selected Object Details:");
+                if (selected_object_ptr) {
+                     // Update dynamic data just before displaying details
+                    selected_object_ptr->UpdateDynamicData();
+                    
+                    ImGui::Text("GUID: 0x%llX", GuidToUint64(selected_object_ptr->GetGUID()));
+                    ImGui::Text("Name: %s", selected_object_ptr->GetName().c_str());
+                    ImGui::Text("Type: %d", selected_object_ptr->GetType());
+                    Vector3 pos = selected_object_ptr->GetPosition();
+                    ImGui::Text("Pos: (%.1f, %.1f, %.1f)", pos.x, pos.y, pos.z);
+                    
+                    // Display distance, handling OBJECT_ITEM
+                    if (selected_object_ptr->GetType() == OBJECT_ITEM) {
+                        ImGui::Text("Dist: N/A");
+                    } else if (playerPosValid) {
+                         float distance = CalculateDistance(playerPos, pos);
+                         ImGui::Text("Dist: %.1f", distance);
+                    } else {
+                        ImGui::Text("Dist: ?");
+                    }
+                    
+                    // Display Unit-specific data if applicable
+                    auto selectedUnit = std::dynamic_pointer_cast<WowUnit>(selected_object_ptr);
+                    if (selectedUnit) {
+                        ImGui::Text("Health: %d / %d", selectedUnit->GetHealth(), selectedUnit->GetMaxHealth());
+                        ImGui::Text("%s: %d / %d", selectedUnit->GetPowerTypeString().c_str(), selectedUnit->GetPower(), selectedUnit->GetMaxPower());
+                        ImGui::Text("Level: %d", selectedUnit->GetLevel());
+                        ImGui::Text("Flags: 0x%X", selectedUnit->GetUnitFlags());
+                        ImGui::Text("Casting: %d", selectedUnit->GetCastingSpellId());
+                        ImGui::Text("Channeling: %d", selectedUnit->GetChannelSpellId());
+                        ImGui::Text("Is Dead: %s", selectedUnit->IsDead() ? "Yes" : "No");
+                    }
+                     // Add GameObject specific details if needed
+                     auto selectedGameObject = std::dynamic_pointer_cast<WowGameObject>(selected_object_ptr);
+                     if (selectedGameObject) {
+                         // Example: Display quest status if relevant
+                         // ImGui::Text("Quest Status: %d", selectedGameObject->GetQuestStatus());
+                     }
+
+                } else {
+                    ImGui::Text("No object selected.");
+                }
                 ImGui::EndTabItem();
             }
             
@@ -295,22 +414,25 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
                 }
                 ImGui::Separator();
                 
-                // Combine log messages into a single string
-                auto logs = GetLogMessages(); 
-                std::stringstream log_ss;
-                for (const auto& msg : logs) {
-                    log_ss << msg; // Messages should already end with \n
-                }
-                static std::string log_buffer; // Make static to avoid reallocation every frame
-                log_buffer = log_ss.str();
+                // Create a scrollable child window for the log messages
+                // Use -FLT_MIN to automatically size to fill available space
+                ImGui::BeginChild("LogScrollingRegion", ImVec2(0, -ImGui::GetTextLineHeightWithSpacing()), true, ImGuiWindowFlags_HorizontalScrollbar);
 
-                // Use InputTextMultiline with corrected size
-                ImGui::InputTextMultiline("##LogView", 
-                                          (char*)log_buffer.c_str(),        // Pass C-style string 
-                                          log_buffer.length() + 1,        // Pass length + 1 for null terminator
-                                          ImVec2(-FLT_MIN, -FLT_MIN),       // Fill available space
-                                          ImGuiInputTextFlags_ReadOnly);    // Make it read-only
-                
+                // Get the log messages (returns a copy)
+                auto logs = GetLogMessages(); 
+
+                // Display each log message on a new line
+                for (const auto& msg : logs) {
+                    // TextUnformatted is slightly faster than Text if no formatting is needed
+                    ImGui::TextUnformatted(msg.c_str()); // Assuming messages already contain newline characters if desired
+                }
+
+                // Auto-scroll to the bottom if the scroll bar is near the end
+                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+                    ImGui::SetScrollHereY(1.0f);
+                }
+
+                ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             

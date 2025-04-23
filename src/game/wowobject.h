@@ -38,7 +38,7 @@ inline uint64_t GuidToUint64(const WGUID& guid) {
 
 // 3D Vector for positions
 struct Vector3 {
-    float x, y, z;
+    float x = 0.0f, y = 0.0f, z = 0.0f; // Initialize members
 };
 
 // Object Types
@@ -57,19 +57,50 @@ enum WowObjectType {
 class WowObject {
 protected:
     WGUID m_guid;
-    void* m_pointer;
+    void* m_pointer; // Pointer to the object in game memory
     WowObjectType m_type;
 
+    // --- Cached Dynamic Data ---
+    std::string m_cachedName; // Cache name as it might involve function calls
+    Vector3 m_cachedPosition;
+    float m_cachedRotation;
+    float m_cachedScale; 
+    uint64_t m_lastUpdateTime = 0; // Basic throttling mechanism
+
+    // Helper to read memory safely
+    template <typename T> 
+    T ReadMemory(uintptr_t address) {
+        if (!m_pointer || address == 0) return T{}; // Check null pointer/address
+        try {
+             // Add check for being within process memory range if possible
+             return *reinterpret_cast<T*>(address);
+        } catch (const std::exception&) {
+             return T{}; // Return default value on memory access error
+        }
+    }
+    
+    // Helper to read string from vtable function (for GetName)
+    std::string ReadNameFromVTable();
+
 public:
-    WowObject(void* ptr, WGUID guid, WowObjectType type) 
-        : m_pointer(ptr), m_guid(guid), m_type(type) {}
+    WowObject(void* ptr, WGUID guid, WowObjectType type);
+    virtual ~WowObject() = default; // Use default destructor
 
-    virtual ~WowObject() {}
-
-    // Base properties
+    // --- Core Accessors ---
     WGUID GetGUID() const { return m_guid; }
     void* GetPointer() const { return m_pointer; }
-    WowObjectType GetType() const { return m_type; }
+    WowObjectType GetType() const { return m_type; } // Type doesn't change
+
+    // --- Virtual method to update dynamic data ---
+    // Reads from memory into cached members
+    virtual void UpdateDynamicData();
+
+    // --- Accessors for Cached Data ---
+    // Note: These now return the cached values!
+    std::string GetName(); // Will update cache if empty
+    Vector3 GetPosition() const { return m_cachedPosition; }
+    float GetFacing() const { return m_cachedRotation; }
+    float GetScale() const { return m_cachedScale; }
 
     // VFTable function indexes (from user's data) - renamed with VF_ prefix to avoid conflicts
     enum VFTableIndex {
@@ -104,44 +135,72 @@ public:
         return func(arg1);
     }
 
-    // Common methods for all objects
-    std::string GetName();
-    Vector3 GetPosition();
-    float GetFacing();
-    float GetScale();
+    // Common methods (Interact might still call VTable directly or be updated)
     bool Interact();
 };
 
 // Specialized Unit class (for players, NPCs, etc.)
 class WowUnit : public WowObject {
-public:
-    WowUnit(void* ptr, WGUID guid) : WowObject(ptr, guid, OBJECT_UNIT) {}
+protected:
+    // --- Cached Unit-Specific Data ---
+    int m_cachedHealth = 0;
+    int m_cachedMaxHealth = 0;
+    int m_cachedLevel = 0;
+    int m_cachedPower = 0;
+    int m_cachedMaxPower = 0;
+    uint8_t m_cachedPowerType = 0; // Store the raw power type byte
+    uint32_t m_cachedUnitFlags = 0;
+    uint32_t m_cachedCastingSpellId = 0;
+    uint32_t m_cachedChannelSpellId = 0;
 
-    // Unit-specific methods
-    int GetHealth();
-    int GetMaxHealth();
-    int GetLevel();
-    bool IsDead();
+    // Helper function to safely read from UnitFields
+    template <typename T> 
+    T ReadUnitField(DWORD valueOffset);
+
+public:
+    WowUnit(void* ptr, WGUID guid);
+
+    // Override to update unit-specific data
+    void UpdateDynamicData() override;
+
+    // --- Accessors for Cached Unit Data ---
+    int GetHealth() const { return m_cachedHealth; }
+    int GetMaxHealth() const { return m_cachedMaxHealth; }
+    int GetLevel() const { return m_cachedLevel; }
+    int GetPower() const { return m_cachedPower; }
+    int GetMaxPower() const { return m_cachedMaxPower; }
+    uint8_t GetPowerType() const { return m_cachedPowerType; }
+    uint32_t GetUnitFlags() const { return m_cachedUnitFlags; }
+    uint32_t GetCastingSpellId() const { return m_cachedCastingSpellId; }
+    uint32_t GetChannelSpellId() const { return m_cachedChannelSpellId; }
+    
+    bool HasFlag(uint32_t flag) const { return (m_cachedUnitFlags & flag) != 0; }
+    bool IsDead() const { 
+        // Check health first, then specific flags if needed
+        return m_cachedHealth <= 0 || HasFlag(0x04000000); // UNIT_FLAG_SKINNABLE
+    }
+    bool IsCasting() const { return m_cachedCastingSpellId != 0; }
+    bool IsChanneling() const { return m_cachedChannelSpellId != 0; }
+    std::string GetPowerTypeString() const; // Helper to convert type byte to string
 };
 
 // Specialized Player class
 class WowPlayer : public WowUnit {
 public:
-    WowPlayer(void* ptr, WGUID guid) : WowUnit(ptr, guid) {
-        m_type = OBJECT_PLAYER;
-    }
+    WowPlayer(void* ptr, WGUID guid);
 
     // Player-specific methods
     std::string GetClass();
-    int GetMana();
-    int GetMaxMana();
 };
 
 // GameObject class (for doors, chests, etc.)
 class WowGameObject : public WowObject {
 public:
-    WowGameObject(void* ptr, WGUID guid) : WowObject(ptr, guid, OBJECT_GAMEOBJECT) {}
+    WowGameObject(void* ptr, WGUID guid);
 
-    // GameObject-specific methods
-    int GetQuestStatus();
+    // Override to use specific GameObject position logic (Reading Raw Offsets)
+    virtual void UpdateDynamicData() override;
+
+    // Example of keeping VTable call for specific functions
+    int GetQuestStatus(); // Still uses VTable
 }; 
