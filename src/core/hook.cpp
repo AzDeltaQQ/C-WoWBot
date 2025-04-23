@@ -6,6 +6,8 @@
 #include <MinHook.h>
 #include "objectmanager.h"
 #include "log.h"
+#include "functions.h"
+#include "spellmanager.h"
 #include <vector>
 #include <string>
 #include <sstream>
@@ -28,11 +30,13 @@ bool show_gui = true;
 constexpr DWORD ENUM_VISIBLE_OBJECTS_ADDR = 0x004D4B30;
 // Use the address of findObjectByIdAndData for the inner lookup
 constexpr DWORD GET_OBJECT_PTR_BY_GUID_INNER_ADDR = 0x004D4BB0;
+constexpr DWORD ADDR_CurrentTargetGUID = 0x00BD07B0; // Address for current target GUID
 
 // Additional GUI tabs and state
 bool show_objects_tab = true;
 std::vector<std::string> object_list_strings;
 int selected_object_index = -1;
+static int spellIdToCast = 0; // Spell ID input field
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -142,6 +146,9 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         objMgr->Initialize(ENUM_VISIBLE_OBJECTS_ADDR, GET_OBJECT_PTR_BY_GUID_INNER_ADDR);
         // Don't log failure here, as TryFinish handles it
 
+        // Initialize game function pointers
+        InitializeFunctions();
+
         is_hook_initialized = true;
         LogMessage("HookedEndScene: One-time setup complete.");
     }
@@ -230,6 +237,53 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
                      ImGui::Text("Object details unavailable (Manager not ready?).");
                 }
                 
+                ImGui::EndTabItem();
+            }
+            
+            // Spells Tab
+            if (ImGui::BeginTabItem("Spells")) {
+                ImGui::InputInt("Spell ID", &spellIdToCast);
+                
+                // Disable button if ObjMgr isn't ready (needed for local player context eventually)
+                // Or if the function pointer isn't set (checked inside CastSpell)
+                bool canCast = objMgr->IsInitialized(); 
+                if (!canCast) {
+                    ImGui::BeginDisabled();
+                }
+                
+                if (ImGui::Button("Cast Spell on Target")) {
+                    uint64_t currentTargetGuid = 0;
+                    try {
+                        // Read the target GUID directly from the address
+                        // Ensure the pointer is valid before dereferencing if possible,
+                        // but for a static global, direct read is common.
+                        currentTargetGuid = *(uint64_t*)ADDR_CurrentTargetGUID;
+                        
+                        LogStream ss;
+                        ss << "Attempting to cast SpellID: " << spellIdToCast 
+                           << " on TargetGUID: 0x" << std::hex << currentTargetGuid;
+                        LogMessage(ss.str());
+                        
+                        if (currentTargetGuid != 0) {
+                            bool success = SpellManager::GetInstance().CastSpell(spellIdToCast, currentTargetGuid);
+                            LogMessage(success ? "CastSpell call succeeded (returned true)." : "CastSpell call failed (returned false).");
+                        } else {
+                            LogMessage("No target selected (GUID is 0).");
+                        }
+                        
+                    } catch (const std::exception& e) {
+                        LogStream ssErr;
+                        ssErr << "Exception reading target GUID or casting spell: " << e.what();
+                        LogMessage(ssErr.str());
+                    } catch (...) {
+                         LogMessage("Unknown exception reading target GUID or casting spell.");
+                    }
+                }
+                
+                if (!canCast) {
+                    ImGui::EndDisabled();
+                }
+
                 ImGui::EndTabItem();
             }
             
