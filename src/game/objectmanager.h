@@ -67,6 +67,9 @@ public:
     // Get singleton instance
     static ObjectManager* GetInstance();
     
+    // Add a static shutdown method
+    static void Shutdown(); 
+
     // Initialize only stores function pointers now
     bool Initialize(DWORD enumVisibleObjectsAddr, DWORD getObjectPtrByGuidInnerAddr);
     // New method to attempt pointer/GUID reading
@@ -90,4 +93,10 @@ public:
     
     // Get nearest object of a type
     std::shared_ptr<WowObject> GetNearestObject(WowObjectType type, float maxDistance = 9999.0f);
+
+    std::shared_ptr<WowObject> GetTarget();
+    std::shared_ptr<WowObject> GetObjectByGUID(uint64_t guid);
+    const std::map<uint64_t, std::shared_ptr<WowObject>>& GetObjects() const; // Return const ref
+
+    uint64_t GetLocalPlayerGUID() const; // Add this getter
 }; 

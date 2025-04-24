@@ -22,6 +22,12 @@ set(SOURCE_FILES
     src/utils/log.cpp
     src/game/functions.cpp
     src/game/spellmanager.cpp
+    # Add GUI source files
+    src/gui/gui.cpp
+    src/gui/main_tab.cpp
+    src/gui/objects_tab.cpp
+    src/gui/spells_tab.cpp
+    src/gui/log_tab.cpp
 )
 
 # ImGui source files using new paths
@@ -54,6 +60,7 @@ target_include_directories(WoWDX9Hook PRIVATE
     src/core       # Add new source directories to include paths
     src/game
     src/utils
+    src/gui        # Add gui include directory
     dependencies/ImGui
     dependencies/ImGui/backends
     dependencies/MinHook/include

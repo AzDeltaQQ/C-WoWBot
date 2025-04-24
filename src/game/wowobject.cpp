@@ -2,6 +2,9 @@
 #include <Windows.h>
 #include <stdexcept> // For exception handling
 #include <chrono> // For basic throttling timestamp
+#include <sstream>
+#include "log.h" // Include for LogStream and LogMessage
+#include "objectmanager.h" // Include ObjectManager to get local player GUID
 
 // --- Offsets (Assuming these are defined correctly elsewhere or here) ---
 // Object Base Relative
@@ -17,11 +20,11 @@ constexpr DWORD OBJECT_CHANNEL_ID_OFFSET = 0xC20; // Use verified offset
 constexpr DWORD UNIT_FIELD_HEALTH_OFFSET = 0x18 * 4;
 constexpr DWORD UNIT_FIELD_MAXHEALTH_OFFSET = 0x20 * 4;
 constexpr DWORD UNIT_FIELD_LEVEL_OFFSET = 0x36 * 4;
-constexpr DWORD UNIT_FIELD_FLAGS_OFFSET = 0xEC;
-constexpr DWORD UNIT_FIELD_POWER_TYPE_FROM_DESCRIPTOR = 0x47;
+constexpr DWORD UNIT_FIELD_FLAGS_OFFSET = 0x3B * 4;
+constexpr DWORD UNIT_FIELD_POWTYPE_OFFSET = 0x5F; // Offset of Power Type within UNIT_FIELD_BYTES_0 (0x17*4 + 3)
 // Power offsets (relative to UnitFields base)
-constexpr DWORD UNIT_FIELD_POWER_BASE = 0x4C; // UNIT_FIELD_POWERS start
-constexpr DWORD UNIT_FIELD_MAXPOWER_BASE = 0x6C; // UNIT_FIELD_MAXPOWERS start
+constexpr DWORD UNIT_FIELD_POWER_BASE = 0x19 * 4; // Was 0x4C, enum UNIT_FIELD_POWER1 = 0x19
+constexpr DWORD UNIT_FIELD_MAXPOWER_BASE = 0x21 * 4; // Was 0x6C, enum UNIT_FIELD_MAXPOWER1 = 0x21
 
 // VFTable indices (keep as before)
 // Note: These are only used for GetName, GetScale, Interact, GetQuestStatus currently
@@ -191,16 +194,23 @@ T WowUnit::ReadUnitField(DWORD valueOffset) {
 
 // Update dynamic data for Unit
 void WowUnit::UpdateDynamicData() {
-    // Call base class update first for Pos/Rot etc. and throttling
+    // Call base class update first
     WowObject::UpdateDynamicData(); 
 
-    // Check if base class actually updated (based on timestamp)
-    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (m_lastUpdateTime != now_ms) { 
-       return; // Base class was throttled, so we skip too
-    }
-    // Ensure pointer is still valid after base call might have returned early
+    // Ensure pointer is still valid
     if (!m_pointer) return; 
+
+    // Get the actual local player GUID (still useful for rage division later)
+    ObjectManager* objMgr = ObjectManager::GetInstance();
+    uint64_t localPlayerGuid64 = objMgr->IsInitialized() ? objMgr->GetLocalPlayerGUID() : 0;
+    bool isPlayerObject = (GuidToUint64(m_guid) == localPlayerGuid64 && localPlayerGuid64 != 0);
+
+    // Optional: Log the comparison
+    // LogStream guidCompareLog;
+    // guidCompareLog << "[GUID Check] ObjectGUID: 0x" << std::hex << GuidToUint64(m_guid) 
+    //                << ", LocalPlayerGUID: 0x" << std::hex << playerGuid 
+    //                << ", isPlayerObject: " << (isPlayer ? "true" : "false");
+    // LogMessage(guidCompareLog.str());
 
     // --- Read Unit Specific Data --- 
     try {
@@ -210,47 +220,101 @@ void WowUnit::UpdateDynamicData() {
         uintptr_t descriptorPtrAddr = baseAddr + OBJECT_DESCRIPTOR_PTR_OFFSET;
         uintptr_t descriptorPtr = ReadMemory<uintptr_t>(descriptorPtrAddr);
 
-        if (unitFieldsPtr) {
-            // Read core unit fields
-            m_cachedHealth = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_HEALTH_OFFSET);
-            m_cachedMaxHealth = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_MAXHEALTH_OFFSET);
-            m_cachedLevel = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_LEVEL_OFFSET);
-            m_cachedUnitFlags = ReadMemory<uint32_t>(unitFieldsPtr + UNIT_FIELD_FLAGS_OFFSET);
+        // Try reading UnitFields data IF the pointer is valid
+        if (unitFieldsPtr) { 
+            // Read core unit fields using UnitFields offsets
+            m_cachedHealth = 0; m_cachedMaxHealth = 0; m_cachedLevel = 0; m_cachedUnitFlags = 0; // Reset before reading
+            try {
+                m_cachedHealth = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_HEALTH_OFFSET);
+                m_cachedMaxHealth = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_MAXHEALTH_OFFSET);
+                m_cachedLevel = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_LEVEL_OFFSET);
+                m_cachedUnitFlags = ReadMemory<uint32_t>(unitFieldsPtr + UNIT_FIELD_FLAGS_OFFSET);
+                
 
-            // Read Power Type (prefer descriptor)
-            if (descriptorPtr) {
-                 m_cachedPowerType = ReadMemory<uint8_t>(descriptorPtr + UNIT_FIELD_POWER_TYPE_FROM_DESCRIPTOR);
-                 // Basic sanity check on power type (0-6 are known valid types)
-                 if (m_cachedPowerType > 6) m_cachedPowerType = 0; 
-            } else {
-                 m_cachedPowerType = 0; // Default to Mana if no descriptor
+            } catch (const std::exception& e) {
+                // Removed error log
+            } catch (...) {
+                 // Removed error log
             }
 
-            // Read Power/MaxPower based on type using array offsets
+            // --- Read Power Type (Combined Logic with Debugging) ---
+
+            uint8_t rawPowerType = 0xFF; // Default to invalid
+            try { // Try reading power type from UNIT_FIELD_BYTES_0 (Byte 3)
+                 uintptr_t bytes0Addr = unitFieldsPtr + (0x17*4); 
+                 uint32_t bytes0Val = ReadMemory<uint32_t>(bytes0Addr);
+                 rawPowerType = (bytes0Val >> 24) & 0xFF; 
+                 
+            } catch (...) {
+                 
+            }
+
+            // Fallback to descriptor if Bytes0 read failed or seems invalid
+            if (rawPowerType > 6) {
+                
+                if (descriptorPtr) {
+                     try { 
+                          uintptr_t descriptorPowerTypeAddr = descriptorPtr + 0x47; 
+                          rawPowerType = ReadMemory<uint8_t>(descriptorPowerTypeAddr);
+                          
+                     } catch (...) {
+                          rawPowerType = 0xFF;
+                     }
+                } else {
+                     rawPowerType = 0xFF;
+                }
+            }
+            // Validate final rawPowerType and cache it
+            if (rawPowerType <= 6) { m_cachedPowerType = rawPowerType; }
+            else { 
+                     m_cachedPowerType = 0; 
+            }
+            
+
+            // Read Power/MaxPower based on determined type using standard array offsets
             DWORD powerOffset = UNIT_FIELD_POWER_BASE + (m_cachedPowerType * 4);
             DWORD maxPowerOffset = UNIT_FIELD_MAXPOWER_BASE + (m_cachedPowerType * 4);
-
-            m_cachedPower = ReadMemory<int>(unitFieldsPtr + powerOffset);
-            m_cachedMaxPower = ReadMemory<int>(unitFieldsPtr + maxPowerOffset);
             
-        } else {
-            // Failed to read UnitFields pointer, clear related data
+
+            int rawPower = 0; int rawMaxPower = 0;
+            try { 
+                rawPower = ReadMemory<int>(unitFieldsPtr + powerOffset);
+                rawMaxPower = ReadMemory<int>(unitFieldsPtr + maxPowerOffset);
+                
+            } catch(...) { 
+            }
+            m_cachedPower = rawPower; m_cachedMaxPower = rawMaxPower;
+
+
+            // Read casting/channeling from object base offsets (independent of UnitFields)
+            try { 
+                 m_cachedCastingSpellId = ReadMemory<uint32_t>(baseAddr + OBJECT_CASTING_ID_OFFSET);
+                 m_cachedChannelSpellId = ReadMemory<uint32_t>(baseAddr + OBJECT_CHANNEL_ID_OFFSET);
+            } catch (...) {
+                m_cachedCastingSpellId = 0; m_cachedChannelSpellId = 0;
+            }
+
+        } else { // Failed to read UnitFields pointer
+            
+            // Clear relevant data if UF pointer is bad
             m_cachedHealth = 0; m_cachedMaxHealth = 0; m_cachedLevel = 0;
             m_cachedUnitFlags = 0; m_cachedPower = 0; m_cachedMaxPower = 0;
-            m_cachedPowerType = 0;
+            m_cachedPowerType = 0; m_cachedCastingSpellId = 0; m_cachedChannelSpellId = 0;
         }
 
-        // Read casting/channeling from object base offsets (independent of UnitFields)
-        m_cachedCastingSpellId = ReadMemory<uint32_t>(baseAddr + OBJECT_CASTING_ID_OFFSET);
-        m_cachedChannelSpellId = ReadMemory<uint32_t>(baseAddr + OBJECT_CHANNEL_ID_OFFSET);
-
+    } catch (const std::exception& e) {
+        
+        // Clear all fields on outer exception
+        m_cachedHealth = 0; m_cachedMaxHealth = 0; m_cachedLevel = 0; m_cachedUnitFlags = 0;
+        m_cachedPower = 0; m_cachedMaxPower = 0; m_cachedPowerType = 0;
+        m_cachedCastingSpellId = 0; m_cachedChannelSpellId = 0;
     } catch (...) {
-         // Clear data on exception
+        
+        // Clear all fields
          m_cachedHealth = 0; m_cachedMaxHealth = 0; m_cachedLevel = 0; m_cachedUnitFlags = 0;
-         m_cachedPower = 0; m_cachedMaxPower = 0; m_cachedPowerType = 0;
-         m_cachedCastingSpellId = 0; m_cachedChannelSpellId = 0;
+        m_cachedPower = 0; m_cachedMaxPower = 0; m_cachedPowerType = 0;
+        m_cachedCastingSpellId = 0; m_cachedChannelSpellId = 0;
     }
-    // Note: m_lastUpdateTime was already set by the base class call
 }
 
 // Helper to get power type as string

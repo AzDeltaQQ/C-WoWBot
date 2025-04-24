@@ -28,7 +28,13 @@ private:
     std::stringstream m_stream;
 };
 
-// Function to add a message to the log buffer
+// Function to initialize the log file
+void InitializeLogFile();
+
+// Function to shutdown the log file
+void ShutdownLogFile();
+
+// Function to add a message to the log buffer and file
 void LogMessage(const std::string& message);
 
 // Function to retrieve all log messages (thread-safe copy)

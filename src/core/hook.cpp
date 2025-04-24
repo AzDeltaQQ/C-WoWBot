@@ -1,521 +1,482 @@
 #include "hook.h"
 #include <d3d9.h>
-#include "imgui.h"
-#include "imgui_impl_dx9.h"
-#include "imgui_impl_win32.h"
+#include "imgui_impl_dx9.h" // Add this include for Reset hook functions
+// #include "imgui.h"           // No longer directly needed here
+// #include "imgui_impl_win32.h" // No longer directly needed here
 #include <MinHook.h>
+#include <cstdio> // Include for snprintf
 #include "objectmanager.h"
 #include "log.h"
 #include "functions.h"
-#include "spellmanager.h"
-#include <vector>
-#include <string>
-#include <sstream>
-#include <iomanip>
-#include <cmath> // Include for sqrtf
-#include <memory> // Include for std::shared_ptr
+#include "gui.h" // Include the main GUI header
 
 #pragma comment(lib, "d3d9.lib")
 
-typedef HRESULT(APIENTRY* EndScene)(LPDIRECT3DDEVICE9 pDevice);
-EndScene oEndScene = nullptr;
+// Function pointer for the original EndScene
+typedef HRESULT(APIENTRY* EndScene_t)(LPDIRECT3DDEVICE9 pDevice);
+EndScene_t oEndScene = nullptr;
 
-typedef HRESULT(APIENTRY* Reset)(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters);
-Reset oReset = nullptr;
+// Add type and variable for Reset hook
+typedef HRESULT(APIENTRY* Reset_t)(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters);
+Reset_t oReset = nullptr;
 
-bool is_hook_initialized = false;
-bool show_demo_window = true;
-bool show_gui = true;
+// Re-add type and variable for GameUISystemShutdown hook
+typedef void (__cdecl* GameUISystemShutdown_t)();
+GameUISystemShutdown_t oGameUISystemShutdown = nullptr;
 
-// Object manager address - this should be the address in WoW.exe
-// In this example, we're using the address provided in the assembly dump
+// Store function addresses for cleanup
+LPVOID EndSceneFunc = nullptr;
+LPVOID ResetFunc = nullptr;
+LPVOID WorldFrame__RenderFunc = nullptr;
+LPVOID GameUISystemShutdownFunc = nullptr; // Re-add address storage
+
+// Hook status and delay logic
+bool is_d3d_hooked = false;
+bool is_gui_initialized = false;
+
+// Re-add Flag to prevent double cleanup
+static bool g_cleanupCalled = false;
+
+// Game addresses (ensure these are correct for your WoW version)
 constexpr DWORD ENUM_VISIBLE_OBJECTS_ADDR = 0x004D4B30;
-// Use the address of findObjectByIdAndData for the inner lookup
 constexpr DWORD GET_OBJECT_PTR_BY_GUID_INNER_ADDR = 0x004D4BB0;
-constexpr DWORD ADDR_CurrentTargetGUID = 0x00BD07B0; // Address for current target GUID
 
-// Additional GUI tabs and state
-// Store shared_ptrs to WowObjects instead of just strings
-std::vector<std::shared_ptr<WowObject>> object_list_pointers;
-int selected_object_index = -1;
-// Keep track of the actual selected object pointer for easy access
-std::shared_ptr<WowObject> selected_object_ptr = nullptr; 
-
-static int spellIdToCast = 0; // Spell ID input field
-
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-WNDPROC oWndProc;
-LRESULT APIENTRY WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    // Process ImGui window procedure first
-    if (show_gui) {
-        ImGuiIO& io = ImGui::GetIO();
-        bool processed = ImGui_ImplWin32_WndProcHandler(hwnd, uMsg, wParam, lParam);
-        
-        // Block ALL mouse messages if ImGui wants to capture mouse
-        if (io.WantCaptureMouse && (uMsg >= WM_MOUSEFIRST && uMsg <= WM_MOUSELAST)) {
-            // If ImGui processed this mouse message, don't pass it to the game
-            return processed ? 1 : 0;
-        }
-        
-        // Block keyboard messages if ImGui wants the keyboard
-        if (io.WantCaptureKeyboard && (uMsg >= WM_KEYFIRST && uMsg <= WM_KEYLAST)) {
-            // If ImGui processed this keyboard message, don't pass it to the game
-            return processed ? 1 : 0;
-        }
-        
-        // If ImGui processed it and we got here, it was a non-mouse/keyboard message
-        if (processed) {
-            return 1;
-        }
+// The hooked EndScene function
+HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    // If the hook isn't properly set up yet, just call the original (if possible)
+    if (!oEndScene) {
+        // This state should ideally not be reached if initialization is correct
+        LogMessage("HookedEndScene Warning: Called before oEndScene was captured!");
+        // Cannot call original, maybe return D3D_OK or an error?
+        return D3D_OK; 
     }
 
-    // If not handled by ImGui, pass to the original WndProc
-    return CallWindowProc(oWndProc, hwnd, uMsg, wParam, lParam);
-}
+    // Perform one-time initialization on the first call after hook is ready
+    if (!is_gui_initialized) {
+        LogMessage("HookedEndScene: Performing one-time initialization...");
+        is_gui_initialized = true; // Set flag immediately to prevent re-entry
 
-// Helper function to calculate distance between two points
-inline float CalculateDistance(const Vector3& p1, const Vector3& p2) {
-    float dx = p1.x - p2.x;
-    float dy = p1.y - p2.y;
-    float dz = p1.z - p2.z;
-    return sqrtf(dx*dx + dy*dy + dz*dz);
-}
+        D3DDEVICE_CREATION_PARAMETERS params;
+        if (SUCCEEDED(pDevice->GetCreationParameters(&params))) {
+            LogMessage("HookedEndScene: Initializing GUI...");
+            GUI::Initialize(params.hFocusWindow, pDevice);
+            // Check if GUI initialization actually succeeded
+            if (GUI::IsInitialized()) { 
+                 LogMessage("HookedEndScene: GUI Initialized Successfully.");
+                 // Initialize Object Manager only after GUI is confirmed
+                 ObjectManager* objMgr = ObjectManager::GetInstance();
+                 LogMessage("HookedEndScene: Initializing ObjectManager...");
+                 objMgr->Initialize(ENUM_VISIBLE_OBJECTS_ADDR, GET_OBJECT_PTR_BY_GUID_INNER_ADDR);
 
-// Function to update the object list pointers (formerly UpdateObjectListForGUI)
-void UpdateObjectPointerList() {
-    object_list_pointers.clear();
-    selected_object_index = -1;
-    selected_object_ptr = nullptr; // Clear selected pointer too
-
-    LogMessage("UpdateObjectPointerList: Starting update...");
-    ObjectManager* objMgr = ObjectManager::GetInstance();
-    if (!objMgr || !objMgr->IsInitialized()) {
-        LogMessage("UpdateObjectPointerList: Aborted - ObjectManager not ready.");
-        return;
-    }
-
-    objMgr->Update(); // Refresh the ObjectManager's internal cache
-    LogMessage("UpdateObjectPointerList: ObjectManager::Update() finished.");
-
-    // Get local player position for distance check
-    Vector3 playerPos = {0, 0, 0};
-    bool playerPosValid = false;
-    auto player = objMgr->GetLocalPlayer();
-    if (player) {
-        player->UpdateDynamicData(); // Ensure player position is fresh
-        playerPos = player->GetPosition();
-        if (playerPos.x != 0.0f || playerPos.y != 0.0f || playerPos.z != 0.0f) {
-            playerPosValid = true;
-        }
-    }
-    if (!playerPosValid) {
-         LogMessage("UpdateObjectPointerList: Warning - Could not get valid player position for distance filtering.");
-    }
-
-    auto objects_map = objMgr->GetObjects(); // Get the map of shared_ptrs
-    LogMessage("UpdateObjectPointerList: Retrieved " + std::to_string(objects_map.size()) + " raw objects from cache.");
-
-    object_list_pointers.reserve(objects_map.size()); // Reserve potential max space
-    
-    constexpr float MAX_DISTANCE_FILTER = 1000.0f;
-    
-    for (const auto& pair : objects_map) {
-        if (!pair.second) continue; // Skip null pointers
-        
-        auto& objPtr = pair.second;
-        WowObjectType objType = objPtr->GetType();
-
-        // Always include items, regardless of distance
-        if (objType == OBJECT_ITEM) {
-            object_list_pointers.push_back(objPtr);
-            continue; 
-        }
-
-        // For non-items, filter by distance if player position is valid
-        if (playerPosValid) {
-            objPtr->UpdateDynamicData(); // Ensure object position is updated before checking distance
-            Vector3 objPos = objPtr->GetPosition();
-            float distance = CalculateDistance(playerPos, objPos);
-
-            if (distance <= MAX_DISTANCE_FILTER) {
-                object_list_pointers.push_back(objPtr);
+                 LogMessage("HookedEndScene: Initializing Game Functions...");
+                 InitializeFunctions();
+                 
+                 LogMessage("HookedEndScene: One-time initialization complete.");
+            } else {
+                LogMessage("HookedEndScene Error: GUI::Initialize failed!");
+                // If GUI fails, reset the flag so we might retry (or handle error differently)
+                is_gui_initialized = false; 
             }
         } else {
-            // If player position is invalid, maybe include all non-items?
-            // Or exclude them? Let's include them for now.
-            object_list_pointers.push_back(objPtr); 
+            LogMessage("HookedEndScene Error: GetCreationParameters failed!");
+            // If GetCreationParameters fails, reset the flag so we might retry
+            is_gui_initialized = false; 
         }
     }
-    LogMessage("UpdateObjectPointerList: Finished filtering. Added " + std::to_string(object_list_pointers.size()) + " objects to GUI list.");
-    
-    // Optional: Sort the list here if desired (e.g., by distance or name)
-    // std::sort(object_list_pointers.begin(), ...);
-}
 
-HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
-    // One-time hook setup (DX hook, ImGui context, WndProc)
-    if (!is_hook_initialized) {
-        LogMessage("HookedEndScene: Performing one-time setup...");
-        D3DDEVICE_CREATION_PARAMETERS params;
-        pDevice->GetCreationParameters(&params);
-
-        ImGui::CreateContext();
-        ImGuiIO& io = ImGui::GetIO();
-        io.MouseDrawCursor = false;
-        io.IniFilename = NULL;
-        io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-
-        ImGui_ImplWin32_Init(params.hFocusWindow);
-        ImGui_ImplDX9_Init(pDevice);
-
-        oWndProc = (WNDPROC)SetWindowLongPtr(params.hFocusWindow, GWLP_WNDPROC, (LONG_PTR)WndProc);
-        
-        // Call basic Initialize for Object Manager (only sets func ptrs)
+    // Only proceed with per-frame logic if GUI is fully initialized
+    if (GUI::IsInitialized()) { // Check the actual GUI state, not our local flag
+        // Attempt to finish Object Manager initialization if needed
         ObjectManager* objMgr = ObjectManager::GetInstance();
-        objMgr->Initialize(ENUM_VISIBLE_OBJECTS_ADDR, GET_OBJECT_PTR_BY_GUID_INNER_ADDR);
-        // Don't log failure here, as TryFinish handles it
-
-        // Initialize game function pointers
-        InitializeFunctions();
-
-        is_hook_initialized = true;
-        LogMessage("HookedEndScene: One-time setup complete.");
-    }
-
-    // Attempt to finish Object Manager initialization if not already done
-    ObjectManager* objMgr = ObjectManager::GetInstance(); // Get instance again
-    if (!objMgr->IsInitialized()) {
-        objMgr->TryFinishInitialization();
-        // Optional: Add a small delay or limit frequency of attempts?
-    }
-
-    // --- Per Frame Logic --- 
-    if (GetAsyncKeyState(VK_INSERT) & 1) {
-        show_gui = !show_gui;
-    }
-
-    ImGui_ImplDX9_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
-
-    if (show_gui) {
-        // Set initial position just once on the first frame
-        static bool first_frame = true;
-        if (first_frame) {
-            ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_FirstUseEver);
-            first_frame = false;
-        }
-        
-        // Create a window with tabs
-        ImGui::Begin("WoW Hook", &show_gui);
-        
-        if (ImGui::BeginTabBar("MainTabs")) {
-            // Main tab
-            if (ImGui::BeginTabItem("Main")) {
-                // Check if ObjMgr is initialized before accessing player data
-                if (objMgr->IsInitialized()) {
-                    auto player = objMgr->GetLocalPlayer();
-                    if (player) {
-                       player->UpdateDynamicData(); // Update player data every frame
-
-                       ImGui::Text("Local Player: %s", player->GetName().c_str());
-                       Vector3 pos = player->GetPosition();
-                       ImGui::Text("Position: %.2f, %.2f, %.2f", pos.x, pos.y, pos.z);
-                       ImGui::Text("Facing: %.2f", player->GetFacing());
-                       // Cast to WowUnit to access unit-specific data
-                       auto playerUnit = std::dynamic_pointer_cast<WowUnit>(player);
-                       if (playerUnit) {
-                           ImGui::Text("Health: %d / %d", playerUnit->GetHealth(), playerUnit->GetMaxHealth());
-                           ImGui::Text("%s: %d / %d", playerUnit->GetPowerTypeString().c_str(), playerUnit->GetPower(), playerUnit->GetMaxPower());
-                           ImGui::Text("Level: %d", playerUnit->GetLevel());
-                           ImGui::Text("Flags: 0x%X", playerUnit->GetUnitFlags());
-                           ImGui::Text("Casting: %d", playerUnit->GetCastingSpellId());
-                           ImGui::Text("Channeling: %d", playerUnit->GetChannelSpellId());
-                       }
-                    } else {
-                        ImGui::Text("Local player object not found in cache/lookup.");
-                    }
-                } else {
-                    ImGui::Text("Object Manager initializing...");
-                }
-                ImGui::EndTabItem();
+        if (!objMgr->IsInitialized()) {
+            objMgr->TryFinishInitialization(); // This will log success/failure internally
+        } else { 
+            // Ensure player data is updated frequently if OM is ready
+            // Check if player GUID is valid *and* game is in the world state (10)
+            uint64_t playerGuid = objMgr->GetLocalPlayerGUID(); // Get the GUID
+            DWORD clientState = 0;
+            try { // Read client state safely
+                clientState = *reinterpret_cast<DWORD*>(CLIENT_STATE_ADDR);
+            } catch (...) {
+                // LogMessage("[HookedEndScene] EXCEPTION reading client state!"); // Optional log
+                clientState = 0; // Assume invalid state on error
             }
-            
-            // Objects tab - Updated Drawing Logic
-            if (ImGui::BeginTabItem("Objects")) {
-                // Refresh button now calls UpdateObjectPointerList
-                if (!objMgr->IsInitialized()) {
-                    ImGui::TextDisabled("Refresh Objects (Initializing...)");
-                } else {
-                    if (ImGui::Button("Refresh Objects")) {
-                        UpdateObjectPointerList(); // Update the pointer list
-                    }
-                }
-                ImGui::SameLine();
-                ImGui::Text("%zu objects found", object_list_pointers.size());
-                
-                // Get local player pos once for distance calculation - Moved outside list child
-                Vector3 playerPos = {0, 0, 0};
-                bool playerPosValid = false;
-                if (objMgr->IsInitialized()) { // Check again in case it changed
-                    auto player = objMgr->GetLocalPlayer();
-                    if (player) {
-                        // Ensure player data is reasonably fresh for position calculation
-                        player->UpdateDynamicData(); 
-                        playerPos = player->GetPosition(); // Use cached position
-                        if (playerPos.x != 0.0f || playerPos.y != 0.0f || playerPos.z != 0.0f) {
-                             playerPosValid = true;
-                        }
-                    }
-                }
 
-                // Dynamic list rendering
-                float listHeight = ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing() * 4; // Leave more space for details
-                ImGui::BeginChild("ObjectList", ImVec2(0, listHeight > 0 ? listHeight : 100), true);
-                
-                if (object_list_pointers.empty()) {
-                    ImGui::Text(objMgr->IsInitialized() ? "No objects found or list not refreshed." : "Object Manager not initialized.");
-                } else {
-                    // Player pos is calculated above now
-                    for (size_t i = 0; i < object_list_pointers.size(); ++i) {
-                        const auto& objPtr = object_list_pointers[i];
-                        if (!objPtr) continue;
-
-                        WowObjectType currentObjType = objPtr->GetType();
-
-                        // Generate display string on the fly
-                        std::stringstream ssLabel;
-                        ssLabel << "GUID: 0x" << std::hex << std::setw(16) << std::setfill('0') << GuidToUint64(objPtr->GetGUID()) << " | ";
-                        ssLabel << "Name: '" << objPtr->GetName() << "' | "; 
-                        ssLabel << "Type: " << objPtr->GetType();
-
-                        // Add distance, handling OBJECT_ITEM specifically
-                        if (currentObjType == OBJECT_ITEM) {
-                            ssLabel << " | Dist: N/A";
-                        } else if (playerPosValid) {
-                            // Only calculate/show distance for non-items if player pos is valid
-                            objPtr->UpdateDynamicData(); // Ensure position is current for list display
-                            float distance = CalculateDistance(playerPos, objPtr->GetPosition());
-                            ssLabel << " | Dist: " << std::fixed << std::setprecision(1) << distance;
-                        } else {
-                             ssLabel << " | Dist: ?"; // Indicate unknown distance if player pos invalid
-                        }
-
-                        std::string label = ssLabel.str();
-                        if (ImGui::Selectable(label.c_str(), selected_object_index == i)) {
-                            selected_object_index = i;
-                            selected_object_ptr = objPtr; // Store the shared_ptr
-                        }
-                    }
-                }
-                ImGui::EndChild(); // End ObjectList
-
-                // Display details for the selected object
-                ImGui::Separator();
-                ImGui::Text("Selected Object Details:");
-                if (selected_object_ptr) {
-                     // Update dynamic data just before displaying details
-                    selected_object_ptr->UpdateDynamicData();
-                    
-                    ImGui::Text("GUID: 0x%llX", GuidToUint64(selected_object_ptr->GetGUID()));
-                    ImGui::Text("Name: %s", selected_object_ptr->GetName().c_str());
-                    ImGui::Text("Type: %d", selected_object_ptr->GetType());
-                    Vector3 pos = selected_object_ptr->GetPosition();
-                    ImGui::Text("Pos: (%.1f, %.1f, %.1f)", pos.x, pos.y, pos.z);
-                    
-                    // Display distance, handling OBJECT_ITEM
-                    if (selected_object_ptr->GetType() == OBJECT_ITEM) {
-                        ImGui::Text("Dist: N/A");
-                    } else if (playerPosValid) {
-                         float distance = CalculateDistance(playerPos, pos);
-                         ImGui::Text("Dist: %.1f", distance);
-                    } else {
-                        ImGui::Text("Dist: ?");
-                    }
-                    
-                    // Display Unit-specific data if applicable
-                    auto selectedUnit = std::dynamic_pointer_cast<WowUnit>(selected_object_ptr);
-                    if (selectedUnit) {
-                        ImGui::Text("Health: %d / %d", selectedUnit->GetHealth(), selectedUnit->GetMaxHealth());
-                        ImGui::Text("%s: %d / %d", selectedUnit->GetPowerTypeString().c_str(), selectedUnit->GetPower(), selectedUnit->GetMaxPower());
-                        ImGui::Text("Level: %d", selectedUnit->GetLevel());
-                        ImGui::Text("Flags: 0x%X", selectedUnit->GetUnitFlags());
-                        ImGui::Text("Casting: %d", selectedUnit->GetCastingSpellId());
-                        ImGui::Text("Channeling: %d", selectedUnit->GetChannelSpellId());
-                        ImGui::Text("Is Dead: %s", selectedUnit->IsDead() ? "Yes" : "No");
-                    }
-                     // Add GameObject specific details if needed
-                     auto selectedGameObject = std::dynamic_pointer_cast<WowGameObject>(selected_object_ptr);
-                     if (selectedGameObject) {
-                         // Example: Display quest status if relevant
-                         // ImGui::Text("Quest Status: %d", selectedGameObject->GetQuestStatus());
-                     }
-
-                } else {
-                    ImGui::Text("No object selected.");
-                }
-                ImGui::EndTabItem();
-            }
-            
-            // Spells Tab
-            if (ImGui::BeginTabItem("Spells")) {
-                ImGui::InputInt("Spell ID", &spellIdToCast);
-                
-                // Disable button if ObjMgr isn't ready (needed for local player context eventually)
-                // Or if the function pointer isn't set (checked inside CastSpell)
-                bool canCast = objMgr->IsInitialized(); 
-                if (!canCast) {
-                    ImGui::BeginDisabled();
-                }
-                
-                if (ImGui::Button("Cast Spell on Target")) {
-                    uint64_t currentTargetGuid = 0;
-                    try {
-                        // Read the target GUID directly from the address
-                        // Ensure the pointer is valid before dereferencing if possible,
-                        // but for a static global, direct read is common.
-                        currentTargetGuid = *(uint64_t*)ADDR_CurrentTargetGUID;
-                        
-                        LogStream ss;
-                        ss << "Attempting to cast SpellID: " << spellIdToCast 
-                           << " on TargetGUID: 0x" << std::hex << currentTargetGuid;
-                        LogMessage(ss.str());
-                        
-                        if (currentTargetGuid != 0) {
-                            bool success = SpellManager::GetInstance().CastSpell(spellIdToCast, currentTargetGuid);
-                            LogMessage(success ? "CastSpell call succeeded (returned true)." : "CastSpell call failed (returned false).");
-                        } else {
-                            LogMessage("No target selected (GUID is 0).");
-                        }
-                        
+            if (playerGuid != 0 && clientState == 10) { // Check BOTH conditions
+                // LogMessage("[HookedEndScene] Player GUID valid and ClientState is 10. Attempting update..."); // Optional log
+                auto player = objMgr->GetLocalPlayer();
+                if (player) {
+                    // LogMessage("[HookedEndScene] Player object obtained. Calling UpdateDynamicData..."); // Keep existing log
+                    try { // Add try-catch
+                        player->UpdateDynamicData(); // Force update every frame for player
+                        // LogMessage("[HookedEndScene] UpdateDynamicData called successfully."); // Keep existing log
                     } catch (const std::exception& e) {
-                        LogStream ssErr;
-                        ssErr << "Exception reading target GUID or casting spell: " << e.what();
-                        LogMessage(ssErr.str());
+                        LogStream errLog;
+                        errLog << "[HookedEndScene] EXCEPTION calling player->UpdateDynamicData(): " << e.what();
+                        LogMessage(errLog.str());
                     } catch (...) {
-                         LogMessage("Unknown exception reading target GUID or casting spell.");
+                        LogMessage("[HookedEndScene] UNKNOWN EXCEPTION calling player->UpdateDynamicData()");
                     }
+                } else {
+                    // LogMessage("[HookedEndScene] GetLocalPlayer() returned nullptr even with valid GUID/State."); // Optional log
                 }
-                
-                if (!canCast) {
-                    ImGui::EndDisabled();
-                }
-
-                ImGui::EndTabItem();
+            } else {
+                 // LogMessage("[HookedEndScene] Skipping player update (GUID=" + std::to_string(playerGuid) + ", State=" + std::to_string(clientState) + ")"); // Optional log
             }
-            
-            // Log tab
-            if (ImGui::BeginTabItem("Log")) {
-                // Button to clear the log
-                if (ImGui::Button("Clear Log")) {
-                    ClearLogMessages();
-                }
-                ImGui::Separator();
-                
-                // Create a scrollable child window for the log messages
-                // Use -FLT_MIN to automatically size to fill available space
-                ImGui::BeginChild("LogScrollingRegion", ImVec2(0, -ImGui::GetTextLineHeightWithSpacing()), true, ImGuiWindowFlags_HorizontalScrollbar);
-
-                // Get the log messages (returns a copy)
-                auto logs = GetLogMessages(); 
-
-                // Display each log message on a new line
-                for (const auto& msg : logs) {
-                    // TextUnformatted is slightly faster than Text if no formatting is needed
-                    ImGui::TextUnformatted(msg.c_str()); // Assuming messages already contain newline characters if desired
-                }
-
-                // Auto-scroll to the bottom if the scroll bar is near the end
-                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
-                    ImGui::SetScrollHereY(1.0f);
-                }
-
-                ImGui::EndChild();
-                ImGui::EndTabItem();
-            }
-            
-            ImGui::EndTabBar();
         }
-        
-        ImGui::End();
+
+        // Toggle GUI visibility
+        if (GetAsyncKeyState(VK_INSERT) & 1) {
+            GUI::ToggleVisibility();
+        }
+
+        // Render the GUI if it's visible
+        GUI::Render(); // Render handles visibility check internally now
     }
 
-    ImGui::EndFrame();
-    ImGui::Render();
-    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-
+    // ALWAYS call the original EndScene function at the end
     return oEndScene(pDevice);
 }
 
-HRESULT APIENTRY HookedReset(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters) {
-    ImGui_ImplDX9_InvalidateDeviceObjects();
-    HRESULT result = oReset(pDevice, pPresentationParameters);
-    if (SUCCEEDED(result)) {
-        ImGui_ImplDX9_CreateDeviceObjects();
+// Re-add Detour function for GameUISystemShutdown (Order will be changed later)
+void __cdecl HookedGameUISystemShutdown() {
+    LogMessage("[Hook] HookedGameUISystemShutdown called.");
+    
+    // ---- CORRECTED ORDER ----
+    // Call the original game function FIRST
+    LogMessage("[Hook] Calling original GameUISystemShutdown...");
+    if (oGameUISystemShutdown) {
+        try {
+             oGameUISystemShutdown();
+             LogMessage("[Hook] Original GameUISystemShutdown finished.");
+        } catch (const std::exception& e) {
+             LogMessage(std::string("[Hook] EXCEPTION during original GameUISystemShutdown: ") + e.what());
+        } catch (...) {
+             LogMessage("[Hook] UNKNOWN EXCEPTION during original GameUISystemShutdown.");
+        }
+    } else {
+        LogMessage("[Hook] Error: oGameUISystemShutdown is NULL! Cannot call original.");
     }
+
+    // Call our cleanup routine AFTER the original function has executed
+    // CleanupHook itself will check g_cleanupCalled
+    LogMessage("[Hook] Proceeding to Hook::CleanupHook...");
+    Hook::CleanupHook(); 
+    LogMessage("[Hook] Hook::CleanupHook finished.");
+    // ---- END CORRECTED ORDER ----
+}
+
+// Uncomment and implement the Reset hook handler
+HRESULT APIENTRY HookedReset(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters) {
+    // Include header here just in case
+    #include "imgui_impl_dx9.h"
+    LogMessage("HookedReset: Called."); // Log entry
+
+    // Invalidate ImGui device objects BEFORE calling the original Reset
+    if (GUI::IsInitialized()) { // Check if GUI was ever initialized
+        LogMessage("HookedReset: Invalidating ImGui device objects...");
+        ImGui_ImplDX9_InvalidateDeviceObjects();
+    } else {
+         LogMessage("HookedReset: GUI not initialized, skipping Invalidate.");
+    }
+    
+    // Call the original Reset function
+    HRESULT result = E_FAIL; // Default to failure
+    if (oReset) {
+        LogMessage("HookedReset: Calling original Reset...");
+        result = oReset(pDevice, pPresentationParameters);
+        char resetResultMsg[128];
+        snprintf(resetResultMsg, sizeof(resetResultMsg), "HookedReset: Original Reset returned 0x%lX", result);
+        LogMessage(resetResultMsg);
+    } else {
+         LogMessage("HookedReset Error: Original Reset function pointer (oReset) is null!");
+    }
+    
+    // Recreate ImGui device objects AFTER the original Reset succeeds
+    if (SUCCEEDED(result)) {
+        if (GUI::IsInitialized()) { // Check again in case shutdown occurred
+             LogMessage("HookedReset: Reset succeeded. Recreating ImGui device objects...");
+             ImGui_ImplDX9_CreateDeviceObjects();
+        } else {
+             LogMessage("HookedReset: Reset succeeded, but GUI not initialized, skipping Create.");
+        }
+    } else {
+         LogMessage("HookedReset: Reset failed, ImGui objects not recreated.");
+    }
+
     return result;
 }
 
-void InitializeHook() {
-    // Initialize MinHook
-    if (MH_Initialize() != MH_OK) {
-        return;
+// --- Hook Management --- 
+
+namespace Hook {
+
+    // Helper function to create a minimal temporary window
+    HWND CreateTemporaryWindow() {
+        WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, DefWindowProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, "TempD3DWindowClass", NULL };
+        RegisterClassEx(&wc);
+        HWND hwnd = CreateWindow("TempD3DWindowClass", NULL, WS_OVERLAPPEDWINDOW, 100, 100, 300, 300, GetDesktopWindow(), NULL, wc.hInstance, NULL);
+        // Don't ShowWindow(hwnd, SW_HIDE); // Keep it hidden by default
+        return hwnd;
     }
 
-    // Get Direct3D device
-    IDirect3D9* pD3D = Direct3DCreate9(D3D_SDK_VERSION);
-    if (!pD3D) return;
+    bool Initialize() {
+        LogMessage("Hook::Initialize: Initializing MinHook...");
+        if (MH_Initialize() != MH_OK) {
+            LogMessage("Hook::Initialize Error: MH_Initialize failed!");
+            return false;
+        }
+        LogMessage("Hook::Initialize: MinHook Initialized.");
 
-    D3DPRESENT_PARAMETERS d3dpp = { 0 };
-    d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    d3dpp.hDeviceWindow = GetForegroundWindow();
-    d3dpp.Windowed = TRUE;
+        LogMessage("Hook::Initialize: Finding EndScene address...");
+        // Find the address of EndScene dynamically
+        // Create a dummy device to get the VTable
+        LogMessage("Hook::Initialize: Creating D3D9 object...");
+        IDirect3D9* pD3D = Direct3DCreate9(D3D_SDK_VERSION);
+        if (!pD3D) {
+            LogMessage("Hook::Initialize Error: Direct3DCreate9 failed!");
+            MH_Uninitialize();
+            return false;
+        }
+        LogMessage("Hook::Initialize: D3D9 object created.");
 
-    IDirect3DDevice9* pDevice = nullptr;
-    HRESULT result = pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow,
-        D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDevice);
+        LogMessage("Hook::Initialize: Creating temporary window...");
+        HWND tempHwnd = CreateTemporaryWindow();
+        if (!tempHwnd) {
+             LogMessage("Hook::Initialize Error: Failed to create temporary window!");
+             pD3D->Release();
+             MH_Uninitialize();
+             return false;
+        }
+        LogMessage("Hook::Initialize: Temporary window created.");
 
-    if (FAILED(result) || !pDevice) {
-        pD3D->Release();
-        return;
+        D3DPRESENT_PARAMETERS d3dpp = {};
+        d3dpp.Windowed = TRUE;
+        d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+        d3dpp.hDeviceWindow = tempHwnd; 
+        d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE; // Avoid vsync issues
+
+        LogMessage("Hook::Initialize: Attempting to create dummy D3D device...");
+        IDirect3DDevice9* pDummyDevice = nullptr;
+        HRESULT hr = pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow,
+                                    D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDummyDevice);
+        
+        LogMessage("Hook::Initialize: Releasing D3D9 object...");
+        pD3D->Release(); // Release the D3D object
+        LogMessage("Hook::Initialize: Destroying temporary window...");
+        DestroyWindow(tempHwnd); // Clean up the temporary window
+        UnregisterClass("TempD3DWindowClass", GetModuleHandle(NULL));
+        LogMessage("Hook::Initialize: Temporary window destroyed.");
+
+        if (FAILED(hr)) { // Check HRESULT first
+            char errorMsg[256];
+            snprintf(errorMsg, sizeof(errorMsg), "Hook::Initialize Error: CreateDevice failed! HRESULT: 0x%lX", hr);
+            LogMessage(errorMsg);
+            MH_Uninitialize();
+            return false;
+        }
+        
+        if (!pDummyDevice) { // Explicitly check if the device pointer is NULL
+             char errorMsg[256];
+             snprintf(errorMsg, sizeof(errorMsg), "Hook::Initialize Error: CreateDevice succeeded (hr=0x%lX) but returned NULL device pointer!", hr);
+             LogMessage(errorMsg); 
+             MH_Uninitialize();
+             return false;
+        }
+        LogMessage("Hook::Initialize: Dummy device created successfully.");
+
+        // Get the VTable (adjust index if needed - 42 is common for EndScene)
+        LogMessage("Hook::Initialize: Getting VTable...");
+        void** vTable = *reinterpret_cast<void***>(pDummyDevice);
+        LogMessage("Hook::Initialize: Releasing dummy device...");
+        pDummyDevice->Release(); // Release the dummy device
+        LogMessage("Hook::Initialize: Dummy device released.");
+
+        if (!vTable) { // Check if vTable pointer itself is null
+            LogMessage("Hook::Initialize Error: Failed to get VTable (NULL pointer)!");
+            MH_Uninitialize();
+            return false;
+        }
+        LogMessage("Hook::Initialize: VTable pointer obtained.");
+
+        if (!vTable[42]) { // Check if the specific VTable entry is valid
+            LogMessage("Hook::Initialize Error: VTable entry for EndScene (index 42) is NULL!");
+            MH_Uninitialize();
+            return false;
+        }
+        LogMessage("Hook::Initialize: VTable entry 42 seems valid.");
+        
+        LPVOID endSceneAddress = vTable[42];
+        char addrMsg[128];
+        snprintf(addrMsg, sizeof(addrMsg), "Hook::Initialize: Found EndScene at address 0x%p", endSceneAddress);
+        LogMessage(addrMsg);
+        
+        // Store the function address for later cleanup
+        EndSceneFunc = endSceneAddress;
+
+        // --- Add Reset Hook ---
+        LogMessage("Hook::Initialize: Getting Reset address (VTable index 16)...");
+        if (!vTable[16]) { // Check VTable entry for Reset (index 16)
+            LogMessage("Hook::Initialize Error: VTable entry for Reset (index 16) is NULL!");
+            // Cleanup EndScene hook if Reset fails
+            MH_RemoveHook(EndSceneFunc); 
+            MH_Uninitialize();
+            return false;
+        }
+        LogMessage("Hook::Initialize: VTable entry 16 seems valid.");
+
+        LPVOID resetAddress = vTable[16];
+        snprintf(addrMsg, sizeof(addrMsg), "Hook::Initialize: Found Reset at address 0x%p", resetAddress);
+        LogMessage(addrMsg);
+        ResetFunc = resetAddress; // Store for cleanup
+
+        LogMessage("Hook::Initialize: Creating Reset hook...");
+        // Create the hook for Reset
+        if (MH_CreateHook(ResetFunc, &HookedReset, reinterpret_cast<LPVOID*>(&oReset)) != MH_OK) {
+            LogMessage("Hook::Initialize Error: MH_CreateHook for Reset failed!");
+            MH_RemoveHook(EndSceneFunc); // Cleanup EndScene hook
+            MH_Uninitialize();
+            return false;
+        }
+        LogMessage("Hook::Initialize: Reset Hook Created.");
+        // --- End Reset Hook ---
+
+        LogMessage("Hook::Initialize: Creating EndScene hook...");
+        // Create the hook for EndScene (Target, Detour, Original)
+        if (MH_CreateHook(endSceneAddress, &HookedEndScene, reinterpret_cast<LPVOID*>(&oEndScene)) != MH_OK) {
+            LogMessage("Hook::Initialize Error: MH_CreateHook failed!");
+            MH_Uninitialize();
+            return false;
+        }
+        LogMessage("Hook::Initialize: EndScene Hook Created.");
+
+        LogMessage("Hook::Initialize: Enabling EndScene hook...");
+        // Enable the hook
+        if (MH_EnableHook(endSceneAddress) != MH_OK) { // Use the specific address for enabling
+            LogMessage("Hook::Initialize Error: MH_EnableHook failed!");
+            MH_RemoveHook(endSceneAddress); // Attempt to remove the hook on failure
+            MH_RemoveHook(ResetFunc); // Attempt to remove Reset hook too
+            MH_Uninitialize();
+            return false;
+        }
+        is_d3d_hooked = true;
+        LogMessage("Hook::Initialize: EndScene Hook Enabled.");
+
+        // --- Enable Reset Hook ---
+        LogMessage("Hook::Initialize: Enabling Reset hook...");
+        if (MH_EnableHook(ResetFunc) != MH_OK) {
+            LogMessage("Hook::Initialize Error: MH_EnableHook for Reset failed!");
+            MH_DisableHook(EndSceneFunc); // Disable EndScene hook if Reset enable fails
+            MH_RemoveHook(EndSceneFunc);
+            MH_RemoveHook(ResetFunc);
+            MH_Uninitialize();
+            return false;
+        }
+        LogMessage("Hook::Initialize: Reset Hook Enabled.");
+        // --- End Enable Reset Hook ---
+
+        // --- Re-add GameUISystemShutdown Hook ---
+        LogMessage("Hook::Initialize: Creating GameUISystemShutdown hook (Address: 0x00529160)...");
+        GameUISystemShutdownFunc = (LPVOID)0x00529160;
+        if (MH_CreateHook(GameUISystemShutdownFunc, &HookedGameUISystemShutdown, reinterpret_cast<LPVOID*>(&oGameUISystemShutdown)) != MH_OK) {
+            LogMessage("Hook::Initialize Error: MH_CreateHook for GameUISystemShutdown failed!");
+            // Cleanup other hooks
+            MH_DisableHook(EndSceneFunc);
+            MH_DisableHook(ResetFunc);
+            MH_RemoveHook(EndSceneFunc);
+            MH_RemoveHook(ResetFunc);
+            MH_Uninitialize();
+            return false;
+        }
+        LogMessage("Hook::Initialize: GameUISystemShutdown Hook Created.");
+
+        LogMessage("Hook::Initialize: Enabling GameUISystemShutdown hook...");
+        if (MH_EnableHook(GameUISystemShutdownFunc) != MH_OK) {
+            LogMessage("Hook::Initialize Error: MH_EnableHook for GameUISystemShutdown failed!");
+            // Cleanup other hooks
+            MH_DisableHook(EndSceneFunc);
+            MH_DisableHook(ResetFunc);
+            MH_RemoveHook(EndSceneFunc);
+            MH_RemoveHook(ResetFunc);
+            MH_RemoveHook(GameUISystemShutdownFunc); // Remove this one too
+            MH_Uninitialize();
+            return false;
+        }
+        LogMessage("Hook::Initialize: GameUISystemShutdown Hook Enabled.");
+        // --- End GameUISystemShutdown Hook ---
+
+        LogMessage("Hook::Initialize: D3D Hook Initialization Successful.");
+        return true;
     }
 
-    void** vTable = *reinterpret_cast<void***>(pDevice);
-    
-    // Hook EndScene (index 42 in the vtable)
-    if (MH_CreateHook(vTable[42], &HookedEndScene, reinterpret_cast<LPVOID*>(&oEndScene)) != MH_OK) {
-        pDevice->Release();
-        pD3D->Release();
-        return;
+    void CleanupHook() {
+        // Re-add cleanup flag check 
+        if (g_cleanupCalled) {
+            LogMessage("[Hook] CleanupHook: Already called, skipping duplicate run.");
+            return;
+        }
+        g_cleanupCalled = true; // Set flag immediately
+        
+        LogMessage("[Hook] CleanupHook: Starting cleanup process...");
+
+        // Shutdown GUI first
+        LogMessage("[Hook] CleanupHook: Shutting down GUI...");
+        GUI::Shutdown();
+        LogMessage("[Hook] CleanupHook: GUI shutdown completed.");
+
+        // --- Add ObjectManager Shutdown --- 
+        LogMessage("[Hook] CleanupHook: Shutting down ObjectManager...");
+        ObjectManager::Shutdown(); // Call the static shutdown method
+        LogMessage("[Hook] CleanupHook: ObjectManager shutdown completed.");
+        // --- End ObjectManager Shutdown ---
+
+        // Disable hooks
+        LogMessage("[Hook] CleanupHook: Disabling WorldFrame::Render hook...");
+        if (WorldFrame__RenderFunc) {
+            MH_DisableHook(WorldFrame__RenderFunc);
+            MH_RemoveHook(WorldFrame__RenderFunc);
+        }
+        LogMessage("[Hook] CleanupHook: WorldFrame::Render hook disabled.");
+
+        LogMessage("[Hook] CleanupHook: Disabling EndScene hook...");
+        if (EndSceneFunc) {
+            MH_DisableHook(EndSceneFunc);
+            MH_RemoveHook(EndSceneFunc);
+        }
+        LogMessage("[Hook] CleanupHook: EndScene hook disabled.");
+
+        LogMessage("[Hook] CleanupHook: Disabling Reset hook...");
+        if (ResetFunc) {
+            MH_DisableHook(ResetFunc);
+            MH_RemoveHook(ResetFunc);
+        }
+        LogMessage("[Hook] CleanupHook: Reset hook disabled.");
+
+        // --- Re-add Disable GameUISystemShutdown Hook --- 
+        LogMessage("[Hook] CleanupHook: Disabling GameUISystemShutdown hook...");
+        if (GameUISystemShutdownFunc) {
+            MH_DisableHook(GameUISystemShutdownFunc);
+            MH_RemoveHook(GameUISystemShutdownFunc); // Also remove it
+        }
+        LogMessage("[Hook] CleanupHook: GameUISystemShutdown hook disabled.");
+        // --- End Disable --- 
+
+        // Reset global states
+        oEndScene = nullptr;
+        oReset = nullptr; // Reset the Reset pointer too
+        is_d3d_hooked = false;
+        is_gui_initialized = false;
+
+        // Uninitialize MinHook
+        LogMessage("[Hook] CleanupHook: Uninitializing MinHook...");
+        MH_Uninitialize();
+        LogMessage("[Hook] CleanupHook: MinHook uninitialized.");
+
+        // Log final cleanup message BEFORE closing the log file
+        LogMessage("[Hook] CleanupHook: Cleanup complete. Process should terminate normally now.");
+
+        // Ensure all log messages are flushed to disk and close the file LAST
+        ShutdownLogFile(); 
     }
 
-    // Hook Reset (index 16)
-    if (MH_CreateHook(vTable[16], &HookedReset, reinterpret_cast<LPVOID*>(&oReset)) != MH_OK) {
-        pDevice->Release();
-        pD3D->Release();
-        return;
-    }
-
-    // Enable both hooks
-    if (MH_EnableHook(vTable[42]) != MH_OK || MH_EnableHook(vTable[16]) != MH_OK) {
-        pDevice->Release();
-        pD3D->Release();
-        return;
-    }
-
-    pDevice->Release();
-    pD3D->Release();
-}
-
-void CleanupHook() {
-    if (is_hook_initialized) {
-        ImGui_ImplDX9_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-    }
-
-    MH_DisableHook(MH_ALL_HOOKS);
-    MH_Uninitialize();
-} 
+} // namespace Hook 

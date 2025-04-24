@@ -46,6 +46,25 @@ bool ObjectManager::Initialize(DWORD enumVisibleObjectsAddr, DWORD getObjectPtrB
     return success;
 }
 
+// Static Shutdown method implementation
+void ObjectManager::Shutdown() {
+    if (m_instance) {
+        LogMessage("ObjectManager::Shutdown() called.");
+        // Clear cache explicitly (destructor will also do this, but good practice)
+        m_instance->m_objectCache.clear(); 
+        // Nullify potentially dangerous pointers
+        m_instance->m_objectManagerPtr = nullptr;
+        m_instance->m_enumVisibleObjects = nullptr;
+        m_instance->m_getObjectPtrByGuidInner = nullptr;
+        m_instance->m_isFullyInitialized = false;
+        
+        // Delete the singleton instance
+        delete m_instance;
+        m_instance = nullptr;
+        LogMessage("ObjectManager::Shutdown() completed.");
+    }
+}
+
 // TryFinishInitialization attempts to read the game pointers
 bool ObjectManager::TryFinishInitialization() {
     // If already initialized, don't try again
@@ -53,25 +72,17 @@ bool ObjectManager::TryFinishInitialization() {
         return true;
     }
 
-    std::stringstream ssInit;
-    ssInit << "ObjectManager::TryFinishInitialization Attempting...\n";
-    // Log attempt only once maybe? Or add verbosity level
-    // LogMessage(ssInit.str()); 
-    // ssInit.str(""); 
-    
     ObjectManagerActual* tempObjMgrPtr = nullptr;
     WGUID tempLocalGuid = {0, 0};
 
     try {
         DWORD clientConnection = *reinterpret_cast<DWORD*>(STATIC_CLIENT_CONNECTION);
-        ssInit << "  ClientConnection Addr: 0x" << std::hex << STATIC_CLIENT_CONNECTION << ", Value: 0x" << clientConnection << "\n";
         if (!clientConnection) { 
              // Don't log error every frame, just return false
              return false; 
         }
         
         tempObjMgrPtr = *reinterpret_cast<ObjectManagerActual**>(clientConnection + OBJECT_MANAGER_OFFSET);
-        ssInit << "  ObjectManager Ptr Addr: 0x" << std::hex << (clientConnection + OBJECT_MANAGER_OFFSET) << ", Value: 0x" << tempObjMgrPtr << "\n";
         if (!tempObjMgrPtr) { 
             // Object Manager pointer is still NULL, wait longer
             return false; 
@@ -79,28 +90,26 @@ bool ObjectManager::TryFinishInitialization() {
         
         uintptr_t guidReadAddr = reinterpret_cast<uintptr_t>(tempObjMgrPtr) + LOCAL_GUID_OFFSET;
         tempLocalGuid = *reinterpret_cast<WGUID*>(guidReadAddr);
-        // Format GUID as single 64-bit hex value
-        ssInit << "  Local Player GUID Addr: 0x" << std::hex << guidReadAddr 
-               << ", Value: 0x" << std::hex << std::setw(16) << std::setfill('0') << GuidToUint64(tempLocalGuid) << "\n";
         
         if (!tempLocalGuid.IsValid()) {
-             ssInit << "  WARN: Local player GUID read as invalid/zero.\n";
+             return false; // Indicate initialization is not yet complete
         }
 
     } catch (const std::exception& e) {
-        ssInit << "  EXCEPTION during TryFinishInitialization: " << e.what() << "\n";
-        LogMessage(ssInit.str()); // Log exceptions
+        // Log the exception minimally if needed
+        LogStream errLog; errLog << "[TryFinishInitialization] EXCEPTION: " << e.what(); LogMessage(errLog.str());
         return false; // Failed due to exception
     }
 
     // --- Success! Store pointers and set flag --- 
+    // Only reach here if ClientConnection, ObjMgrPtr, AND LocalPlayerGuid are valid
     m_objectManagerPtr = tempObjMgrPtr;
     m_localPlayerGuid = tempLocalGuid;
     m_isFullyInitialized = true;
                    
-    ssInit << "TryFinishInitialization Succeeded! Object Manager ready.\n";
-    LogMessage(ssInit.str());
-    
+    // Optionally add a single log message for success if desired
+    LogMessage("ObjectManager::TryFinishInitialization Succeeded! Object Manager ready.");
+
     return true;
 }
 
@@ -113,16 +122,10 @@ int __cdecl ObjectManager::EnumObjectsCallback(uint32_t guid_low, uint32_t guid_
     WGUID guid = { guid_low, guid_high };
     void* objPtr = nullptr;
     
-    std::stringstream ssCallback;
-    // Format GUID as single 64-bit hex value
-    ssCallback << "EnumCallback: GUID=0x" << std::hex << std::setw(16) << std::setfill('0') << GuidToUint64(guid);
-    
     try {
          objPtr = instance->m_getObjectPtrByGuidInner(instance->m_objectManagerPtr, guid.guid_low, &guid);
-         ssCallback << " -> Ptr=0x" << std::hex << objPtr;
     } catch (const std::exception& e) {
-        ssCallback << " -> EXCEPTION calling GetObjectPtrByGuidInner: " << e.what();
-        LogMessage(ssCallback.str() + "\n");
+        LogStream errLog; errLog << "[EnumObjectsCallback] EXCEPTION calling GetObjectPtrByGuidInner: " << e.what(); LogMessage(errLog.str());
         return 1; // Continue enumeration
     }
 
@@ -134,37 +137,29 @@ int __cdecl ObjectManager::EnumObjectsCallback(uint32_t guid_low, uint32_t guid_
     try {
         uintptr_t typeAddr = reinterpret_cast<uintptr_t>(objPtr) + OBJECT_TYPE_OFFSET;
         type = *reinterpret_cast<WowObjectType*>(typeAddr);
-        ssCallback << ", TypeAddr=0x" << std::hex << typeAddr << ", TypeVal=" << std::dec << static_cast<int>(type);
         if (type < OBJECT_NONE || type > OBJECT_CORPSE) {
-             ssCallback << " (Invalid Type!) -> None";
              type = OBJECT_NONE;
         }
     } catch (const std::exception& e) {
-         ssCallback << " -> EXCEPTION reading Object Type: " << e.what();
-         LogMessage(ssCallback.str() + "\n");
+         LogStream errLog; errLog << "[EnumObjectsCallback] EXCEPTION reading Object Type: " << e.what(); LogMessage(errLog.str());
          return 1; 
     }
 
     if (type != OBJECT_NONE) { 
-        ssCallback << " -> Caching...";
         std::shared_ptr<WowObject> obj;
         switch (type) {
-            case OBJECT_PLAYER:     obj = std::make_shared<WowPlayer>(objPtr, guid); ssCallback << "(Player)"; break;
-            case OBJECT_UNIT:       obj = std::make_shared<WowUnit>(objPtr, guid); ssCallback << "(Unit)"; break;
-            case OBJECT_GAMEOBJECT: obj = std::make_shared<WowGameObject>(objPtr, guid); ssCallback << "(GameObject)"; break;
-            default:                obj = std::make_shared<WowObject>(objPtr, guid, type); ssCallback << "(Other:" << static_cast<int>(type) << ")"; break;
+            case OBJECT_PLAYER:     obj = std::make_shared<WowPlayer>(objPtr, guid); break;
+            case OBJECT_UNIT:       obj = std::make_shared<WowUnit>(objPtr, guid); break;
+            case OBJECT_GAMEOBJECT: obj = std::make_shared<WowGameObject>(objPtr, guid); break;
+            default:                obj = std::make_shared<WowObject>(objPtr, guid, type); break;
         }
         if (obj) { 
-             ssCallback << " OK";
              instance->m_objectCache[guid] = obj;
         } else {
-             ssCallback << " FAILED (make_shared)";
+             LogStream errLog; errLog << "[EnumObjectsCallback] FAILED make_shared for GUID 0x" << std::hex << GuidToUint64(guid);
+             LogMessage(errLog.str());
         }
-    } else {
-        ssCallback << " -> Skipping (Type None)";
     }
-    
-    LogMessage(ssCallback.str() + "\n"); // Log the final result for this GUID
     
     return 1; // Continue enumeration
 }
@@ -301,4 +296,17 @@ std::shared_ptr<WowObject> ObjectManager::GetNearestObject(WowObjectType type, f
     }
     
     return nearest;
-} 
+}
+
+// Implementation for GetLocalPlayerGUID
+uint64_t ObjectManager::GetLocalPlayerGUID() const {
+    // Directly return the cached member variable
+    // TryFinishInitialization or Update should keep this up-to-date
+    return GuidToUint64(m_localPlayerGuid); // Convert WGUID to uint64_t
+}
+
+// Helper to read memory safely (move this if it's used elsewhere or make it static)
+// template<typename T> 
+// T ObjectManager::ReadMemory(uintptr_t address) {
+//     // ... implementation ... 
+// } 
