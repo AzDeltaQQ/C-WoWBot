@@ -38,6 +38,9 @@ bool is_gui_initialized = false;
 // Re-add Flag to prevent double cleanup
 static bool g_cleanupCalled = false;
 
+// Flag to signal Win32 backend re-initialization is needed after reset
+static bool g_needsWin32Reinit = false;
+
 // Game addresses (ensure these are correct for your WoW version)
 constexpr DWORD ENUM_VISIBLE_OBJECTS_ADDR = 0x004D4B30;
 constexpr DWORD GET_OBJECT_PTR_BY_GUID_INNER_ADDR = 0x004D4BB0;
@@ -87,6 +90,48 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
 
     // Only proceed with per-frame logic if GUI is fully initialized
     if (GUI::IsInitialized()) { // Check the actual GUI state, not our local flag
+        
+        // Check device state and handle Win32 re-initialization if needed
+        HRESULT coopLevel = pDevice->TestCooperativeLevel();
+        if (coopLevel != D3D_OK) {
+            if (coopLevel == D3DERR_DEVICELOST) {
+                // LogMessage("HookedEndScene: Device lost! GUI rendering skipped."); // Optional log
+                return oEndScene(pDevice); // Skip rendering if device is lost
+            } else if (coopLevel == D3DERR_DEVICENOTRESET) {
+                // LogMessage("HookedEndScene: Device needs reset! Setting flag."); // Optional log
+                g_needsWin32Reinit = true; // Set flag
+            } else {
+                 // LogStream ssErr; ssErr << "HookedEndScene: TestCooperativeLevel unexpected code: 0x" << std::hex << coopLevel; LogMessage(ssErr.str()); // Optional log
+                 return oEndScene(pDevice); // Skip rendering on unknown errors
+            }
+        } else if (g_needsWin32Reinit) { // Check if device is OK AND reinit was needed
+            // Device is now OK, and we needed a Win32 re-initialization
+            LogMessage("HookedEndScene: Device OK. Performing delayed Win32 re-initialization..."); // Keep this essential log
+            
+            HWND currentHwnd = nullptr;
+            D3DDEVICE_CREATION_PARAMETERS params;
+            if (SUCCEEDED(pDevice->GetCreationParameters(&params))) {
+                currentHwnd = params.hFocusWindow;
+            }
+
+            if (currentHwnd) {
+                LogMessage("HookedEndScene: Re-initializing Win32 backend and WndProc hook..."); // Keep this essential log
+                ImGui_ImplWin32_Shutdown(); 
+                ImGui_ImplWin32_Init(currentHwnd); 
+                GUI::oWndProc = (WNDPROC)SetWindowLongPtr(currentHwnd, GWLP_WNDPROC, (LONG_PTR)GUI::WndProc);
+                 if (!GUI::oWndProc) {
+                    LogMessage("HookedEndScene Error: Failed to re-hook WndProc after reset!"); // Keep error log
+                 } else {
+                    LogMessage("HookedEndScene: Successfully re-initialized Win32 and re-hooked WndProc."); // Keep success log
+                    GUI::g_hWnd = currentHwnd; // Update the stored HWND
+                 }
+            } else {
+                LogMessage("HookedEndScene Error: Failed to get current HWND for re-initialization."); // Keep error log
+            }
+            
+            g_needsWin32Reinit = false; // Reset the flag
+        }
+
         // Attempt to finish Object Manager initialization if needed
         ObjectManager* objMgr = ObjectManager::GetInstance();
         if (!objMgr->IsInitialized()) {
@@ -169,22 +214,21 @@ void __cdecl HookedGameUISystemShutdown() {
 
 // Uncomment and implement the Reset hook handler
 HRESULT APIENTRY HookedReset(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters) {
-    // Include header here just in case
     // #include "imgui_impl_dx9.h" // Moved include to top of file
     // #include "imgui_impl_win32.h" // Need this now
-    LogMessage("HookedReset: Called."); // Log entry
+    // LogMessage("##### HookedReset START #####"); // Removed loud entry log
 
-    HWND currentHwnd = nullptr;
-    D3DDEVICE_CREATION_PARAMETERS params;
-    if (SUCCEEDED(pDevice->GetCreationParameters(&params))) {
-        currentHwnd = params.hFocusWindow;
-    }
+    // HWND currentHwnd = nullptr; // No longer needed here
+    // D3DDEVICE_CREATION_PARAMETERS params; // No longer needed here
+    // if (SUCCEEDED(pDevice->GetCreationParameters(&params))) { // No longer needed here
+    //     currentHwnd = params.hFocusWindow; // No longer needed here
+    // }
 
     // Invalidate ImGui device objects BEFORE calling the original Reset
     if (GUI::IsInitialized()) { // Check if GUI was ever initialized
         LogMessage("HookedReset: Invalidating ImGui device objects...");
         ImGui_ImplDX9_InvalidateDeviceObjects();
-        // We don't shutdown Win32 here yet
+        // We don't shutdown Win32 here anymore
     } else {
          LogMessage("HookedReset: GUI not initialized, skipping Invalidate.");
     }
@@ -207,33 +251,36 @@ HRESULT APIENTRY HookedReset(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* p
              LogMessage("HookedReset: Reset succeeded. Recreating ImGui device objects...");
              ImGui_ImplDX9_CreateDeviceObjects();
 
-             // Re-initialize Win32 backend and WndProc hook
-             if (currentHwnd) {
-                 LogMessage("HookedReset: Re-initializing Win32 backend and WndProc hook...");
-                 // Shutdown the old Win32 backend first
-                 ImGui_ImplWin32_Shutdown(); 
-                 // Re-initialize with current HWND
-                 ImGui_ImplWin32_Init(currentHwnd); 
-                 // Re-hook WndProc 
-                 GUI::oWndProc = (WNDPROC)SetWindowLongPtr(currentHwnd, GWLP_WNDPROC, (LONG_PTR)GUI::WndProc);
-                 if (!GUI::oWndProc) {
-                    LogMessage("HookedReset Error: Failed to re-hook WndProc after reset!");
-                    // Consider how to handle this error - GUI input will break
-                 } else {
-                    LogMessage("HookedReset: Successfully re-initialized Win32 and re-hooked WndProc.");
-                    GUI::g_hWnd = currentHwnd; // Update the stored HWND
-                 }
-             } else {
-                 LogMessage("HookedReset Error: Failed to get current HWND after reset. Cannot re-initialize Win32/WndProc.");
-             }
+             // --- REMOVED Win32 backend and WndProc hook re-initialization --- 
+             // // Re-initialize Win32 backend and WndProc hook
+             // if (currentHwnd) {
+             //     LogMessage("HookedReset: Re-initializing Win32 backend and WndProc hook...");
+             //     // Shutdown the old Win32 backend first
+             //     ImGui_ImplWin32_Shutdown(); 
+             //     // Re-initialize with current HWND
+             //     ImGui_ImplWin32_Init(currentHwnd); 
+             //     // Re-hook WndProc 
+             //     GUI::oWndProc = (WNDPROC)SetWindowLongPtr(currentHwnd, GWLP_WNDPROC, (LONG_PTR)GUI::WndProc);
+             //     if (!GUI::oWndProc) {
+             //        LogMessage("HookedReset Error: Failed to re-hook WndProc after reset!");
+             //        // Consider how to handle this error - GUI input will break
+             //     } else {
+             //        LogMessage("HookedReset: Successfully re-initialized Win32 and re-hooked WndProc.");
+             //        GUI::g_hWnd = currentHwnd; // Update the stored HWND
+             //     }
+             // } else {
+             //     LogMessage("HookedReset Error: Failed to get current HWND after reset. Cannot re-initialize Win32/WndProc.");
+             // }
+             // --- END REMOVED --- 
 
         } else {
-             LogMessage("HookedReset: Reset succeeded, but GUI not initialized, skipping Create/Win32Reinit.");
+             LogMessage("HookedReset: Reset succeeded, but GUI not initialized, skipping Create.");
         }
     } else {
          LogMessage("HookedReset: Reset failed, ImGui objects not recreated.");
     }
 
+    // LogMessage("##### HookedReset END #####"); // Removed end log
     return result;
 }
 

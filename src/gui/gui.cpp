@@ -170,6 +170,15 @@ namespace GUI {
     }
 
     LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+        // Log incoming messages for debugging
+        // if (uMsg == WM_KEYDOWN && wParam == VK_INSERT) {
+        //     LogMessage("##### GUI::WndProc: VK_INSERT received! #####");
+        // } else if (uMsg == WM_KEYDOWN || uMsg == WM_KEYUP || uMsg == WM_MOUSEMOVE) {
+        //      // Log less critical messages less frequently or remove later
+        //      // LogStream ss; ss << "GUI::WndProc: Received msg=" << uMsg << " hwnd=" << hwnd;
+        //      // LogMessage(ss.str());
+        // }
+
         if (show_gui) {
             ImGuiIO& io = ImGui::GetIO();
             // Let ImGui handle its events first
