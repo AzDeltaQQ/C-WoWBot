@@ -57,13 +57,14 @@ target_include_directories(minhook PUBLIC dependencies/MinHook/include)
 
 # Update Include directories for the main library
 target_include_directories(WoWDX9Hook PRIVATE
-    src/core       # Add new source directories to include paths
-    src/game
-    src/utils
-    src/gui        # Add gui include directory
-    dependencies/ImGui
-    dependencies/ImGui/backends
-    dependencies/MinHook/include
+    # ${CMAKE_SOURCE_DIR}/src          # Add the main source directory (Reverting this)
+    ${CMAKE_SOURCE_DIR}/src/core       # Re-add individual subdirectories
+    ${CMAKE_SOURCE_DIR}/src/game
+    ${CMAKE_SOURCE_DIR}/src/utils
+    ${CMAKE_SOURCE_DIR}/src/gui
+    ${CMAKE_SOURCE_DIR}/dependencies/ImGui
+    ${CMAKE_SOURCE_DIR}/dependencies/ImGui/backends
+    ${CMAKE_SOURCE_DIR}/dependencies/MinHook/include # MinHook include is already absolute if add_library uses PUBLIC
     "$ENV{DXSDK_DIR}/Include" # Keep DX SDK include
 )
 

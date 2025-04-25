@@ -1,11 +1,16 @@
 #include <Windows.h>
 #include "hook.h"
 #include "log.h" // Include for logging
+#include "SpellManager.h" // Include SpellManager for the patch function
 
 // Thread function for initialization
 DWORD WINAPI MainThread(LPVOID lpParam) {
     InitializeLogFile(); // Initialize logging first
     LogMessage("MainThread: Starting initialization...");
+
+    // Apply necessary memory patches early
+    SpellManager::PatchCooldownBug_Final(); // Call the final patch function
+
     if (Hook::Initialize()) { // Call namespaced Initialize
         LogMessage("MainThread: Hook::Initialize succeeded.");
     } else {

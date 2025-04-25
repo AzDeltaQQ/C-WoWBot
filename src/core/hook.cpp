@@ -250,161 +250,141 @@ namespace Hook {
         }
         LogMessage("Hook::Initialize: Temporary window created.");
 
-        D3DPRESENT_PARAMETERS d3dpp = {};
-        d3dpp.Windowed = TRUE;
-        d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        d3dpp.hDeviceWindow = tempHwnd; 
-        d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE; // Avoid vsync issues
+        D3DPRESENT_PARAMETERS pp = {};
+        pp.Windowed = TRUE;
+        pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+        pp.hDeviceWindow = tempHwnd;
+        pp.BackBufferFormat = D3DFMT_UNKNOWN; // Needed for dummy device
 
         LogMessage("Hook::Initialize: Attempting to create dummy D3D device...");
         IDirect3DDevice9* pDummyDevice = nullptr;
-        HRESULT hr = pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow,
-                                    D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDummyDevice);
-        
+        HRESULT hr = pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, tempHwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &pDummyDevice);
+
+        // Release D3D object and destroy window immediately after CreateDevice call (whether successful or not)
         LogMessage("Hook::Initialize: Releasing D3D9 object...");
-        pD3D->Release(); // Release the D3D object
+        pD3D->Release();
         LogMessage("Hook::Initialize: Destroying temporary window...");
-        DestroyWindow(tempHwnd); // Clean up the temporary window
+        DestroyWindow(tempHwnd);
         UnregisterClass("TempD3DWindowClass", GetModuleHandle(NULL));
         LogMessage("Hook::Initialize: Temporary window destroyed.");
 
-        if (FAILED(hr)) { // Check HRESULT first
+        if (FAILED(hr)) {
             char errorMsg[256];
             snprintf(errorMsg, sizeof(errorMsg), "Hook::Initialize Error: CreateDevice failed! HRESULT: 0x%lX", hr);
             LogMessage(errorMsg);
-            MH_Uninitialize();
+            // MH_Uninitialize(); // MinHook already initialized, keep it unless complete failure
             return false;
-        }
-        
-        if (!pDummyDevice) { // Explicitly check if the device pointer is NULL
-             char errorMsg[256];
-             snprintf(errorMsg, sizeof(errorMsg), "Hook::Initialize Error: CreateDevice succeeded (hr=0x%lX) but returned NULL device pointer!", hr);
-             LogMessage(errorMsg); 
-             MH_Uninitialize();
-             return false;
         }
         LogMessage("Hook::Initialize: Dummy device created successfully.");
 
-        // Get the VTable (adjust index if needed - 42 is common for EndScene)
         LogMessage("Hook::Initialize: Getting VTable...");
-        void** vTable = *reinterpret_cast<void***>(pDummyDevice);
-        LogMessage("Hook::Initialize: Releasing dummy device...");
-        pDummyDevice->Release(); // Release the dummy device
-        LogMessage("Hook::Initialize: Dummy device released.");
-
-        if (!vTable) { // Check if vTable pointer itself is null
-            LogMessage("Hook::Initialize Error: Failed to get VTable (NULL pointer)!");
-            MH_Uninitialize();
-            return false;
+        DWORD* pVTable = *(DWORD**)pDummyDevice;
+        if (!pVTable) {
+             LogMessage("Hook::Initialize Error: Failed to get VTable pointer!");
+             pDummyDevice->Release(); // Release device before returning
+             // MH_Uninitialize();
+             return false;
         }
         LogMessage("Hook::Initialize: VTable pointer obtained.");
 
-        if (!vTable[42]) { // Check if the specific VTable entry is valid
-            LogMessage("Hook::Initialize Error: VTable entry for EndScene (index 42) is NULL!");
-            MH_Uninitialize();
+        // --- Read function pointers BEFORE releasing the device --- 
+        EndSceneFunc = (LPVOID)pVTable[42]; // Store address in LPVOID
+        ResetFunc = (LPVOID)pVTable[16];    // Store address in LPVOID
+
+        if (!EndSceneFunc) { 
+            LogMessage("Hook::Initialize Error: VTable entry 42 (EndScene) is NULL!");
+            // Decide if this is fatal. Probably is.
+            pDummyDevice->Release();
             return false;
-        }
+        } 
         LogMessage("Hook::Initialize: VTable entry 42 seems valid.");
+        char endSceneMsg[64];
+        snprintf(endSceneMsg, sizeof(endSceneMsg), "Hook::Initialize: Found EndScene at address 0x%p", EndSceneFunc);
+        LogMessage(endSceneMsg);
         
-        LPVOID endSceneAddress = vTable[42];
-        char addrMsg[128];
-        snprintf(addrMsg, sizeof(addrMsg), "Hook::Initialize: Found EndScene at address 0x%p", endSceneAddress);
-        LogMessage(addrMsg);
-        
-        // Store the function address for later cleanup
-        EndSceneFunc = endSceneAddress;
-
-        // --- Add Reset Hook ---
-        LogMessage("Hook::Initialize: Getting Reset address (VTable index 16)...");
-        if (!vTable[16]) { // Check VTable entry for Reset (index 16)
-            LogMessage("Hook::Initialize Error: VTable entry for Reset (index 16) is NULL!");
-            // Cleanup EndScene hook if Reset fails
-            MH_RemoveHook(EndSceneFunc); 
-            MH_Uninitialize();
+        if (!ResetFunc) { 
+            LogMessage("Hook::Initialize Error: VTable entry 16 (Reset) is NULL!");
+             // Decide if this is fatal. Probably is.
+            pDummyDevice->Release();
             return false;
-        }
+        } 
         LogMessage("Hook::Initialize: VTable entry 16 seems valid.");
+        char resetMsg[64];
+        snprintf(resetMsg, sizeof(resetMsg), "Hook::Initialize: Found Reset at address 0x%p", ResetFunc);
+        LogMessage(resetMsg);
+        // ---------------------------------------------------------- 
 
-        LPVOID resetAddress = vTable[16];
-        snprintf(addrMsg, sizeof(addrMsg), "Hook::Initialize: Found Reset at address 0x%p", resetAddress);
-        LogMessage(addrMsg);
-        ResetFunc = resetAddress; // Store for cleanup
+        LogMessage("Hook::Initialize: Releasing dummy device...");
+        pDummyDevice->Release(); // Now safe to release
+        LogMessage("Hook::Initialize: Dummy device released.");
 
+        // Create hooks using the stored addresses
         LogMessage("Hook::Initialize: Creating Reset hook...");
-        // Create the hook for Reset
         if (MH_CreateHook(ResetFunc, &HookedReset, reinterpret_cast<LPVOID*>(&oReset)) != MH_OK) {
             LogMessage("Hook::Initialize Error: MH_CreateHook for Reset failed!");
-            MH_RemoveHook(EndSceneFunc); // Cleanup EndScene hook
-            MH_Uninitialize();
-            return false;
+            // MH_Uninitialize(); // Don't uninitialize if other hooks might succeed or are already active
+            return false; // Or handle partially hooked state?
         }
         LogMessage("Hook::Initialize: Reset Hook Created.");
-        // --- End Reset Hook ---
 
         LogMessage("Hook::Initialize: Creating EndScene hook...");
-        // Create the hook for EndScene (Target, Detour, Original)
-        if (MH_CreateHook(endSceneAddress, &HookedEndScene, reinterpret_cast<LPVOID*>(&oEndScene)) != MH_OK) {
-            LogMessage("Hook::Initialize Error: MH_CreateHook failed!");
-            MH_Uninitialize();
+        if (MH_CreateHook(EndSceneFunc, &HookedEndScene, reinterpret_cast<LPVOID*>(&oEndScene)) != MH_OK) {
+            LogMessage("Hook::Initialize Error: MH_CreateHook for EndScene failed!");
+            // Consider removing the Reset hook if EndScene fails?
+            MH_RemoveHook(ResetFunc);
             return false;
         }
         LogMessage("Hook::Initialize: EndScene Hook Created.");
 
+        // Enable hooks AFTER creating them successfully
         LogMessage("Hook::Initialize: Enabling EndScene hook...");
-        // Enable the hook
-        if (MH_EnableHook(endSceneAddress) != MH_OK) { // Use the specific address for enabling
-            LogMessage("Hook::Initialize Error: MH_EnableHook failed!");
-            MH_RemoveHook(endSceneAddress); // Attempt to remove the hook on failure
-            MH_RemoveHook(ResetFunc); // Attempt to remove Reset hook too
-            MH_Uninitialize();
+        if (MH_EnableHook(EndSceneFunc) != MH_OK) {
+            LogMessage("Hook::Initialize Error: MH_EnableHook for EndScene failed!");
+            MH_RemoveHook(EndSceneFunc); // Clean up hooks
+            MH_RemoveHook(ResetFunc);
             return false;
         }
-        is_d3d_hooked = true;
         LogMessage("Hook::Initialize: EndScene Hook Enabled.");
 
-        // --- Enable Reset Hook ---
         LogMessage("Hook::Initialize: Enabling Reset hook...");
         if (MH_EnableHook(ResetFunc) != MH_OK) {
             LogMessage("Hook::Initialize Error: MH_EnableHook for Reset failed!");
-            MH_DisableHook(EndSceneFunc); // Disable EndScene hook if Reset enable fails
-            MH_RemoveHook(EndSceneFunc);
+            MH_RemoveHook(EndSceneFunc); // Clean up hooks
             MH_RemoveHook(ResetFunc);
-            MH_Uninitialize();
+            // Disable already enabled hook
+            MH_DisableHook(EndSceneFunc);
             return false;
         }
         LogMessage("Hook::Initialize: Reset Hook Enabled.");
-        // --- End Enable Reset Hook ---
 
-        // --- Re-add GameUISystemShutdown Hook ---
+        // Hook GameUISystemShutdown
+        GameUISystemShutdownFunc = (LPVOID)0x00529160; // Use the known absolute address
         LogMessage("Hook::Initialize: Creating GameUISystemShutdown hook (Address: 0x00529160)...");
-        GameUISystemShutdownFunc = (LPVOID)0x00529160;
         if (MH_CreateHook(GameUISystemShutdownFunc, &HookedGameUISystemShutdown, reinterpret_cast<LPVOID*>(&oGameUISystemShutdown)) != MH_OK) {
             LogMessage("Hook::Initialize Error: MH_CreateHook for GameUISystemShutdown failed!");
-            // Cleanup other hooks
-            MH_DisableHook(EndSceneFunc);
-            MH_DisableHook(ResetFunc);
+            // Cleanup previous hooks before returning
             MH_RemoveHook(EndSceneFunc);
             MH_RemoveHook(ResetFunc);
-            MH_Uninitialize();
+            MH_DisableHook(EndSceneFunc);
+            MH_DisableHook(ResetFunc);
             return false;
         }
         LogMessage("Hook::Initialize: GameUISystemShutdown Hook Created.");
 
         LogMessage("Hook::Initialize: Enabling GameUISystemShutdown hook...");
         if (MH_EnableHook(GameUISystemShutdownFunc) != MH_OK) {
-            LogMessage("Hook::Initialize Error: MH_EnableHook for GameUISystemShutdown failed!");
-            // Cleanup other hooks
-            MH_DisableHook(EndSceneFunc);
-            MH_DisableHook(ResetFunc);
-            MH_RemoveHook(EndSceneFunc);
-            MH_RemoveHook(ResetFunc);
-            MH_RemoveHook(GameUISystemShutdownFunc); // Remove this one too
-            MH_Uninitialize();
-            return false;
+             LogMessage("Hook::Initialize Error: MH_EnableHook for GameUISystemShutdown failed!");
+             MH_RemoveHook(GameUISystemShutdownFunc);
+             MH_RemoveHook(EndSceneFunc);
+             MH_RemoveHook(ResetFunc);
+             MH_DisableHook(EndSceneFunc);
+             MH_DisableHook(ResetFunc);
+             return false;
         }
         LogMessage("Hook::Initialize: GameUISystemShutdown Hook Enabled.");
-        // --- End GameUISystemShutdown Hook ---
 
+
+        is_d3d_hooked = true;
         LogMessage("Hook::Initialize: D3D Hook Initialization Successful.");
         return true;
     }
