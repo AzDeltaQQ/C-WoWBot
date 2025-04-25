@@ -20,24 +20,20 @@ extern CastLocalPlayerSpellFn CastLocalPlayerSpell;
 const DWORD OFF_CastLocalPlayerSpell = 0x0080DA40; // Address from disassembly
 
 // GetLocalPlayerGuid Function
-typedef uint64_t (__cdecl* GetLocalPlayerGuidFn)(); // Assuming cdecl, returns uint64 in edx:eax
+typedef uint64_t(__cdecl* GetLocalPlayerGuidFn)();
 extern GetLocalPlayerGuidFn GetLocalPlayerGuid;
 const DWORD OFF_GetLocalPlayerGuid = 0x004D3790;
 
-// RetrieveInfoBlock Function
-// Returns a pointer to an info structure.
-struct PlayerGuidStruct { uint32_t low; uint32_t high; }; // Helper
-// Special "__thiscall" (using ECX for 'this' with stack args)
-typedef void* (__thiscall* RetrieveInfoBlockFn)(
-    void* cachePtr,         // 'this' pointer in ECX
-    int spellId,            // Stack arg 2
-    PlayerGuidStruct* guidPtr, // Stack arg 3
-    void* callbackPtr,      // Stack arg 4
-    int unknown1,           // Stack arg 5
-    int unknown2            // Stack arg 6
-);
-extern RetrieveInfoBlockFn RetrieveInfoBlock;
-const DWORD OFF_RetrieveInfoBlock = 0x0067CA30;
+// RetrieveInfoBlock Function // REMOVED
+// typedef void* (__thiscall* RetrieveInfoBlockFn)(
+//     DWORD* thisPtr,      // ECX: Seems to be a pointer to some structure (e.g., ItemCacheEntry or SpellCacheEntry?)
+//     unsigned int* pID,   // Stack +4: Pointer to the ID (Item ID or Spell ID?)
+//     int* pContext1,      // Stack +8: Seems like context flags or related ID (e.g., Player GUID high?)
+//     int* pContext2,      // Stack +C: Seems like context flags or related ID (e.g., Player GUID low?)
+//     char unknownByte     // Stack +10: Seems like a flag or simple value
+// );
+// extern RetrieveInfoBlockFn RetrieveInfoBlock; // REMOVED
+// const DWORD OFF_RetrieveInfoBlock = 0x0067CA30; // REMOVED
 
 // ApplySpellEffectsIfReady Offset (Used as callback argument)
 const DWORD OFF_ApplySpellEffects = 0x0080ABE0;
