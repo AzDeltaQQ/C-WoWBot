@@ -186,13 +186,13 @@ void GrindingEngine::runLoop() {
             continue; // Immediately check next point or loop condition
         }
 
-        // --- Movement Logic (Restored to original) --- 
+        // --- Movement Logic (Restored to original) ---
         // Just continue moving towards the current target via memory write
         char logBufferCTM[250];
         snprintf(logBufferCTM, sizeof(logBufferCTM), "GrindingEngine: Triggering CTM towards point %zu (Target: %.2f, %.2f, %.2f, Player: %.2f, %.2f, %.2f)",
-                    currentPathIndex + 1, 
+                    currentPathIndex + 1,
                     currentTarget.x, currentTarget.y, currentTarget.z,
-                    playerPosition.x, playerPosition.y, playerPosition.z); 
+                    playerPosition.x, playerPosition.y, playerPosition.z);
         LogMessage(logBufferCTM);
         movementController.ClickToMove(currentTarget, playerPosition);
         // --- End Movement Logic ---

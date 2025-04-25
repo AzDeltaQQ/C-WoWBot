@@ -45,6 +45,13 @@ bool MovementController::ClickToMove(const Vector3& targetPos, const Vector3& pl
         // Write fields based on handlePlayerClickToMove disassembly
         const uintptr_t BASE = CTMOffsets::BASE_ADDR;
         
+        // --- ADDED: Initialize first four floats ---
+        MemoryWriter::WriteMemory<float>(BASE + 0x0, 6.087f);      // Offset +0x0 (Value observed after manual click)
+        MemoryWriter::WriteMemory<float>(BASE + 0x4, 3.1415927f);  // Offset +0x4 (Pi, default loaded in game func)
+        MemoryWriter::WriteMemory<float>(BASE + 0x8, 0.0f);        // Offset +0x8 (Interaction Distance for terrain move)
+        MemoryWriter::WriteMemory<float>(BASE + 0xC, 0.0f);        // Offset +0xC (sqrt(Interaction Distance))
+        // ---------------------------------------------
+        
         // 1. Initialize Progress/Timer/State fields to 0
         MemoryWriter::WriteMemory<float>(BASE - 0x8, 0.0f);     // flt_CA11D0
         MemoryWriter::WriteMemory<uint32_t>(BASE - 0x4, 0);     // dword_CA11D4
@@ -66,13 +73,13 @@ bool MovementController::ClickToMove(const Vector3& targetPos, const Vector3& pl
         MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::START_Z_OFFSET, playerPos.z); // +0x88
         // ------------------------------------------------------------------
 
-        // 5. Clear the GUID in CTM structure
+        // 5. Clear the GUID in CTM structure - RE-ENABLED
         MemoryWriter::WriteMemory<uint64_t>(BASE + CTMOffsets::GUID_OFFSET, 0); // +0x20
         
-        // 6. Set the action type in CTM structure (LAST?)
-        MemoryWriter::WriteMemory<uint32_t>(BASE + CTMOffsets::ACTION_OFFSET, CTMOffsets::ACTION_MOVE); // +0x1C = 4
+        // 6. Set the action type in CTM structure (Action 4)
+        MemoryWriter::WriteMemory<uint32_t>(BASE + CTMOffsets::ACTION_OFFSET, 4); // +0x1C = 4 (CTMOffsets::ACTION_MOVE)
 
-        LogMessage("MovementController: CTM data written (more fields).");
+        LogMessage("MovementController: CTM data written (Action 4, GUID cleared).");
         return true;
 
     } catch (const std::exception& e) {
