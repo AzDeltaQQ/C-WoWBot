@@ -1,6 +1,7 @@
 #include "hook.h"
 #include <d3d9.h>
 #include "imgui_impl_dx9.h" // Add this include for Reset hook functions
+#include "imgui_impl_win32.h" // Added for Reset hook
 // #include "imgui.h"           // No longer directly needed here
 // #include "imgui_impl_win32.h" // No longer directly needed here
 #include <MinHook.h>
@@ -169,13 +170,21 @@ void __cdecl HookedGameUISystemShutdown() {
 // Uncomment and implement the Reset hook handler
 HRESULT APIENTRY HookedReset(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* pPresentationParameters) {
     // Include header here just in case
-    #include "imgui_impl_dx9.h"
+    // #include "imgui_impl_dx9.h" // Moved include to top of file
+    // #include "imgui_impl_win32.h" // Need this now
     LogMessage("HookedReset: Called."); // Log entry
+
+    HWND currentHwnd = nullptr;
+    D3DDEVICE_CREATION_PARAMETERS params;
+    if (SUCCEEDED(pDevice->GetCreationParameters(&params))) {
+        currentHwnd = params.hFocusWindow;
+    }
 
     // Invalidate ImGui device objects BEFORE calling the original Reset
     if (GUI::IsInitialized()) { // Check if GUI was ever initialized
         LogMessage("HookedReset: Invalidating ImGui device objects...");
         ImGui_ImplDX9_InvalidateDeviceObjects();
+        // We don't shutdown Win32 here yet
     } else {
          LogMessage("HookedReset: GUI not initialized, skipping Invalidate.");
     }
@@ -197,8 +206,29 @@ HRESULT APIENTRY HookedReset(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* p
         if (GUI::IsInitialized()) { // Check again in case shutdown occurred
              LogMessage("HookedReset: Reset succeeded. Recreating ImGui device objects...");
              ImGui_ImplDX9_CreateDeviceObjects();
+
+             // Re-initialize Win32 backend and WndProc hook
+             if (currentHwnd) {
+                 LogMessage("HookedReset: Re-initializing Win32 backend and WndProc hook...");
+                 // Shutdown the old Win32 backend first
+                 ImGui_ImplWin32_Shutdown(); 
+                 // Re-initialize with current HWND
+                 ImGui_ImplWin32_Init(currentHwnd); 
+                 // Re-hook WndProc 
+                 GUI::oWndProc = (WNDPROC)SetWindowLongPtr(currentHwnd, GWLP_WNDPROC, (LONG_PTR)GUI::WndProc);
+                 if (!GUI::oWndProc) {
+                    LogMessage("HookedReset Error: Failed to re-hook WndProc after reset!");
+                    // Consider how to handle this error - GUI input will break
+                 } else {
+                    LogMessage("HookedReset: Successfully re-initialized Win32 and re-hooked WndProc.");
+                    GUI::g_hWnd = currentHwnd; // Update the stored HWND
+                 }
+             } else {
+                 LogMessage("HookedReset Error: Failed to get current HWND after reset. Cannot re-initialize Win32/WndProc.");
+             }
+
         } else {
-             LogMessage("HookedReset: Reset succeeded, but GUI not initialized, skipping Create.");
+             LogMessage("HookedReset: Reset succeeded, but GUI not initialized, skipping Create/Win32Reinit.");
         }
     } else {
          LogMessage("HookedReset: Reset failed, ImGui objects not recreated.");
