@@ -1,17 +1,17 @@
 #include <Windows.h>
 #include "hook.h"
-#include "log.h" // Include for logging
-#include "SpellManager.h" // Include SpellManager for the patch function
+#include "log.h"
+#include "SpellManager.h"
 
 // Thread function for initialization
 DWORD WINAPI MainThread(LPVOID lpParam) {
-    InitializeLogFile(); // Initialize logging first
+    InitializeLogFile();
     LogMessage("MainThread: Starting initialization...");
 
     // Apply necessary memory patches early
-    SpellManager::PatchCooldownBug_Final(); // Call the final patch function
+    SpellManager::PatchCooldownBug_Final();
 
-    if (Hook::Initialize()) { // Call namespaced Initialize
+    if (Hook::Initialize()) {
         LogMessage("MainThread: Hook::Initialize succeeded.");
     } else {
         LogMessage("MainThread Error: Hook::Initialize failed.");
@@ -25,15 +25,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call)
     {
     case DLL_PROCESS_ATTACH:
-        DisableThreadLibraryCalls(hModule); // Optional: Optimize DLL loading
+        DisableThreadLibraryCalls(hModule);
         // Create a new thread to run our initialization code
         CloseHandle(CreateThread(nullptr, 0, MainThread, hModule, 0, nullptr)); 
         break;
     case DLL_THREAD_ATTACH:
     case DLL_THREAD_DETACH:
-        break; // Typically do nothing for thread attach/detach
+        break;
     case DLL_PROCESS_DETACH:
-        Hook::CleanupHook(); // Call namespaced CleanupHook
+        Hook::CleanupHook();
         break;
     }
     return TRUE;

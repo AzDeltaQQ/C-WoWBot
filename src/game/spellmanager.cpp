@@ -130,12 +130,6 @@ std::vector<uint32_t> SpellManager::ReadSpellbook() {
     return spell_ids;
 }
 
-// GetSpellCooldownTimes implementation REMOVED
-// bool SpellManager::GetSpellCooldownTimes(...) { ... function body removed ... } // REMOVED
-
-// IsSpellUsable implementation REMOVED
-// bool SpellManager::IsSpellUsable(...) { ... function body removed ... } // REMOVED
-
 // Define the function pointer type for get_spell_cooldown_proxy (0x809000)
 // Ensure DWORD is defined appropriately (e.g., via <windows.h> or manually)
 #ifndef DWORD
@@ -161,7 +155,6 @@ struct MemoryPatch {
 // Helper to apply a single patch
 bool ApplyPatch(uintptr_t address, const std::vector<unsigned char>& patchBytes) {
     size_t patchSize = patchBytes.size();
-    // std::vector<unsigned char> originalBytes(patchSize); // For reverting
     
     DWORD oldProtect;
     // 1. Change memory protection
@@ -171,9 +164,6 @@ bool ApplyPatch(uintptr_t address, const std::vector<unsigned char>& patchBytes)
         LogMessage(ssErr.str());
         return false;
     }
-
-    // 2. Read original bytes (optional, if reverting needed)
-    // memcpy(originalBytes.data(), (void*)address, patchSize);
 
     // 3. Write the patch
     memcpy((void*)address, patchBytes.data(), patchSize);
@@ -253,8 +243,6 @@ int GetSpellCooldownInternal(int spellId, int playerOrPetFlag) {
             return 0; // Spell is ready
         }
     } catch (...) {
-        // TODO: Replace with proper logging using LogMessage/LogStream if available
-        //printf("SpellManager: Exception calling get_spell_cooldown_proxy at address 0x%p\n", (void*)GET_SPELL_COOLDOWN_PROXY_ADDR);
         LogStream ssErr;
         ssErr << "SpellManager: Exception calling get_spell_cooldown_proxy at address 0x" 
               << std::hex << GET_SPELL_COOLDOWN_PROXY_ADDR;

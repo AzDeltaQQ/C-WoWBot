@@ -6,14 +6,6 @@
 
 // Function pointer types and extern declarations will go here
 
-// Example:
-// typedef void (*SomeFunctionType)(int arg1, bool arg2);
-// extern SomeFunctionType SomeFunction;
-
-// Function Offsets (relative to base address)
-// Example:
-// const DWORD OFF_SomeFunction = 0x12345;
-
 // CastLocalPlayerSpell Function
 typedef char (__cdecl* CastLocalPlayerSpellFn)(int spellId, int unknownIntArg1, uint64_t targetGuid, char unknownCharArg);
 extern CastLocalPlayerSpellFn CastLocalPlayerSpell;
@@ -23,17 +15,6 @@ const DWORD OFF_CastLocalPlayerSpell = 0x0080DA40; // Address from disassembly
 typedef uint64_t(__cdecl* GetLocalPlayerGuidFn)();
 extern GetLocalPlayerGuidFn GetLocalPlayerGuid;
 const DWORD OFF_GetLocalPlayerGuid = 0x004D3790;
-
-// RetrieveInfoBlock Function // REMOVED
-// typedef void* (__thiscall* RetrieveInfoBlockFn)(
-//     DWORD* thisPtr,      // ECX: Seems to be a pointer to some structure (e.g., ItemCacheEntry or SpellCacheEntry?)
-//     unsigned int* pID,   // Stack +4: Pointer to the ID (Item ID or Spell ID?)
-//     int* pContext1,      // Stack +8: Seems like context flags or related ID (e.g., Player GUID high?)
-//     int* pContext2,      // Stack +C: Seems like context flags or related ID (e.g., Player GUID low?)
-//     char unknownByte     // Stack +10: Seems like a flag or simple value
-// );
-// extern RetrieveInfoBlockFn RetrieveInfoBlock; // REMOVED
-// const DWORD OFF_RetrieveInfoBlock = 0x0067CA30; // REMOVED
 
 // ApplySpellEffectsIfReady Offset (Used as callback argument)
 const DWORD OFF_ApplySpellEffects = 0x0080ABE0;

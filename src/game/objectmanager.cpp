@@ -304,9 +304,3 @@ uint64_t ObjectManager::GetLocalPlayerGUID() const {
     // TryFinishInitialization or Update should keep this up-to-date
     return GuidToUint64(m_localPlayerGuid); // Convert WGUID to uint64_t
 }
-
-// Helper to read memory safely (move this if it's used elsewhere or make it static)
-// template<typename T> 
-// T ObjectManager::ReadMemory(uintptr_t address) {
-//     // ... implementation ... 
-// } 

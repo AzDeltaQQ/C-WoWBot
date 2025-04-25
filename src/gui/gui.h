@@ -28,8 +28,4 @@ namespace GUI {
     // Checks if the GUI has been successfully initialized.
     bool IsInitialized();
 
-    // For handling Reset
-    // void InvalidateDeviceObjects(); // Removed as Reset is no longer hooked
-    // void CreateDeviceObjects(); // Removed as Reset is no longer hooked
-
-} // namespace GUI 
+} // namespace GUI

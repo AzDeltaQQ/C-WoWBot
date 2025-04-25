@@ -1,3 +1,4 @@
 # Build directories
 build/
 .specstory/
+.cursorignore/

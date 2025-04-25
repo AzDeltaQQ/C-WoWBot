@@ -205,13 +205,6 @@ void WowUnit::UpdateDynamicData() {
     uint64_t localPlayerGuid64 = objMgr->IsInitialized() ? objMgr->GetLocalPlayerGUID() : 0;
     bool isPlayerObject = (GuidToUint64(m_guid) == localPlayerGuid64 && localPlayerGuid64 != 0);
 
-    // Optional: Log the comparison
-    // LogStream guidCompareLog;
-    // guidCompareLog << "[GUID Check] ObjectGUID: 0x" << std::hex << GuidToUint64(m_guid) 
-    //                << ", LocalPlayerGUID: 0x" << std::hex << playerGuid 
-    //                << ", isPlayerObject: " << (isPlayer ? "true" : "false");
-    // LogMessage(guidCompareLog.str());
-
     // --- Read Unit Specific Data --- 
     try {
         uintptr_t baseAddr = reinterpret_cast<uintptr_t>(m_pointer);
@@ -229,12 +222,8 @@ void WowUnit::UpdateDynamicData() {
                 m_cachedMaxHealth = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_MAXHEALTH_OFFSET);
                 m_cachedLevel = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_LEVEL_OFFSET);
                 m_cachedUnitFlags = ReadMemory<uint32_t>(unitFieldsPtr + UNIT_FIELD_FLAGS_OFFSET);
-                
-
             } catch (const std::exception& e) {
-                // Removed error log
             } catch (...) {
-                 // Removed error log
             }
 
             // --- Read Power Type (Combined Logic with Debugging) ---
@@ -244,19 +233,15 @@ void WowUnit::UpdateDynamicData() {
                  uintptr_t bytes0Addr = unitFieldsPtr + (0x17*4); 
                  uint32_t bytes0Val = ReadMemory<uint32_t>(bytes0Addr);
                  rawPowerType = (bytes0Val >> 24) & 0xFF; 
-                 
             } catch (...) {
-                 
             }
 
             // Fallback to descriptor if Bytes0 read failed or seems invalid
             if (rawPowerType > 6) {
-                
                 if (descriptorPtr) {
                      try { 
                           uintptr_t descriptorPowerTypeAddr = descriptorPtr + 0x47; 
                           rawPowerType = ReadMemory<uint8_t>(descriptorPowerTypeAddr);
-                          
                      } catch (...) {
                           rawPowerType = 0xFF;
                      }
@@ -280,7 +265,6 @@ void WowUnit::UpdateDynamicData() {
             try { 
                 rawPower = ReadMemory<int>(unitFieldsPtr + powerOffset);
                 rawMaxPower = ReadMemory<int>(unitFieldsPtr + maxPowerOffset);
-                
             } catch(...) { 
             }
             m_cachedPower = rawPower; m_cachedMaxPower = rawMaxPower;
@@ -295,7 +279,6 @@ void WowUnit::UpdateDynamicData() {
             }
 
         } else { // Failed to read UnitFields pointer
-            
             // Clear relevant data if UF pointer is bad
             m_cachedHealth = 0; m_cachedMaxHealth = 0; m_cachedLevel = 0;
             m_cachedUnitFlags = 0; m_cachedPower = 0; m_cachedMaxPower = 0;
@@ -303,13 +286,11 @@ void WowUnit::UpdateDynamicData() {
         }
 
     } catch (const std::exception& e) {
-        
         // Clear all fields on outer exception
         m_cachedHealth = 0; m_cachedMaxHealth = 0; m_cachedLevel = 0; m_cachedUnitFlags = 0;
         m_cachedPower = 0; m_cachedMaxPower = 0; m_cachedPowerType = 0;
         m_cachedCastingSpellId = 0; m_cachedChannelSpellId = 0;
     } catch (...) {
-        
         // Clear all fields
          m_cachedHealth = 0; m_cachedMaxHealth = 0; m_cachedLevel = 0; m_cachedUnitFlags = 0;
         m_cachedPower = 0; m_cachedMaxPower = 0; m_cachedPowerType = 0;
@@ -338,7 +319,7 @@ WowPlayer::WowPlayer(void* ptr, WGUID guid) : WowUnit(ptr, guid) {
 }
 
 std::string WowPlayer::GetClass() {
-    // Placeholder - Needs implementation using ReadUnitField and UNIT_FIELD_BYTES_0
+    // Needs implementation using ReadUnitField and UNIT_FIELD_BYTES_0
     return "UnknownClass";
 }
 
@@ -349,8 +330,6 @@ WowGameObject::WowGameObject(void* ptr, WGUID guid) : WowObject(ptr, guid, OBJEC
 // Override UpdateDynamicData for GameObjects to read position from raw offsets
 void WowGameObject::UpdateDynamicData() {
     // Call base first for throttling and common data (e.g., rotation from offset)
-    // Note: Base UpdateDynamicData currently reads pos from 0x798/C/0 which is likely wrong for GOs,
-    // so we will overwrite m_cachedPosition below.
     WowObject::UpdateDynamicData(); 
 
     // Check if base class actually updated (based on timestamp comparison)
@@ -364,7 +343,6 @@ void WowGameObject::UpdateDynamicData() {
     if (!m_pointer) return; 
 
     // --- Read GameObject Position from raw offsets 0xE8, 0xEC, 0xF0 --- 
-    // WARNING: These might be local coordinates, not world coordinates.
     try {
         uintptr_t baseAddr = reinterpret_cast<uintptr_t>(m_pointer);
         constexpr DWORD GO_RAW_POS_Y_OFFSET = 0xE8; // Swapped: Offset 0xE8 seems to hold Y
@@ -375,13 +353,8 @@ void WowGameObject::UpdateDynamicData() {
         m_cachedPosition.x = ReadMemory<float>(baseAddr + GO_RAW_POS_X_OFFSET); // Read X from 0xEC
         m_cachedPosition.y = ReadMemory<float>(baseAddr + GO_RAW_POS_Y_OFFSET); // Read Y from 0xE8
         m_cachedPosition.z = ReadMemory<float>(baseAddr + GO_RAW_POS_Z_OFFSET); // Z remains 0xF0
-        
     } catch (...) {
-         // Exception during memory read, keep potentially incorrect position from base class
-         // or consider setting to {0,0,0} here?
-         // For now, we keep whatever base class read.
     }
-    // Note: m_lastUpdateTime was already set by the base class call
 }
 
 // Example of keeping VTable call for specific functions
