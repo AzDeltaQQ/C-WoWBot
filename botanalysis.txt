@@ -1,0 +1,2967 @@
+Okay, here is the detailed reverse engineering analysis of the 23 provided x86 functions related to Movement, Line of Sight (LoS), and Collision.
+
+***
+
+**1. update_object_facing (0x4F42A0)**
+
+*   **Disassembly:**
+    ```assembly
+    0x4F42A0: push    ebp
+    0x4F42A1: mov     ebp, esp
+    0x4F42A3: mov     eax, [ecx+8]      ; Load low dword of object GUID from [ecx+8]
+    0x4F42A6: mov     ecx, [ecx+0Ch]    ; Load high dword of object GUID from [ecx+0Ch] (this clobbers the object pointer in ecx temporarily)
+    0x4F42A9: mov     edx, eax          ; Copy low dword to edx
+    0x4F42AB: or      edx, ecx          ; Check if either low or high dword is non-zero (i.e., if GUID is non-zero)
+    0x4F42AD: jnz     short loc_4F42B6  ; If GUID is non-zero, jump
+    0x4F42AF: fld     [ebp+this]        ; Load input angle 'a2' from stack
+    0x4F42B2: pop     ebp
+    0x4F42B3: retn    4                 ; Return 'a2' unchanged if GUID is zero
+    0x4F42B6: loc_4F42B6:               ; Target for non-zero GUID
+    0x4F42B6: push    ecx               ; Push high dword of GUID
+    0x4F42B7: push    eax               ; Push low dword of GUID (passing __int64 GUID)
+    0x4F42B8: call    getObjectOrientation ; Call function to get current orientation based on GUID
+    0x4F42BD: fadd    [ebp+this]        ; Add the input angle 'a2' to the current orientation
+    0x4F42C0: add     esp, 4            ; Clean up low dword of GUID from stack (high dword removed by ret from getObjectOrientation)
+    0x4F42C3: fstp    [esp+4+var_4]     ; Store the result temporarily on the stack (preparing for wrapAngleRadians call)
+    0x4F42C6: call    wrapAngleRadians  ; Call function to wrap the angle to the range [-PI, PI] or [0, 2*PI]
+    0x4F42CB: add     esp, 4            ; Clean up the temporary angle value from the stack
+    0x4F42CE: pop     ebp
+    0x4F42CF: retn    4                 ; Return the wrapped angle
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // this parameter seems to be misidentified by Hex-Rays; it's likely the object pointer.
+    // a2 is the angle delta to apply.
+    // The object pointer is passed via ECX (thiscall convention).
+    float update_object_facing(WoWObject *this_obj, float angle_delta)
+    {
+      uint64_t guid; // Composed from [ecx+8] and [ecx+C]
+
+      guid.low = *(uint32_t*)((char*)this_obj + 8);
+      guid.high = *(uint32_t*)((char*)this_obj + 12);
+
+      if (guid.raw == 0) // Check if the object's GUID is zero
+      {
+        return angle_delta; // If GUID is zero, return the input angle delta unchanged
+      }
+
+      // Get the object's current orientation using its GUID
+      float current_orientation = getObjectOrientation(guid);
+
+      // Add the angle delta to the current orientation
+      float new_orientation_unwrapped = current_orientation + angle_delta;
+
+      // Wrap the result to a standard angle range (e.g., -PI to PI or 0 to 2*PI)
+      return wrapAngleRadians(new_orientation_unwrapped);
+    }
+    ```
+*   **Functionality:** This function updates an object's facing angle. It takes an object pointer (in `ecx`) and a floating-point angle delta (`a2`) as input. It first checks if the object's GUID (stored at offsets 8 and 12) is non-zero. If the GUID is zero, it returns the input angle delta unmodified. Otherwise, it retrieves the object's current orientation using `getObjectOrientation`, adds the provided angle delta, wraps the resulting angle to a standard range using `wrapAngleRadians`, and returns the new, wrapped orientation.
+*   **Parameters:**
+    *   `ecx` (implied `this`): Pointer to an object structure. Contains the object's GUID at offsets +8 and +12.
+    *   `a2` (float): The angle delta (in radians) to add to the object's current facing.
+*   **Return Value:**
+    *   `float` (ST0): The new, potentially updated, and wrapped facing angle in radians. Returns `a2` unchanged if the object's GUID is 0.
+*   **Movement/LoS/Collision Relevance:** Directly related to **Movement**. It calculates the new facing direction for an object, which is essential for orienting models and determining movement vectors.
+
+***
+
+**2. HandleTerrainClick (0x527830)**
+
+*   **Disassembly:**
+    ```assembly
+    0x527830: push    ebp
+    0x527831: mov     ebp, esp
+    0x527833: push    esi
+    0x527834: mov     esi, [ebp+arg_0]  ; Load pointer 'a1' into esi
+    0x527837: cmp     dword ptr [esi+14h], 4 ; Compare a1[5] (offset 0x14) with 4
+    0x52783B: jz      short loc_527846  ; If equal to 4, jump
+    0x52783D: cmp     dword_BD0758, 0   ; Compare global variable dword_BD0758 with 0
+    0x527844: jz      short loc_527852  ; If global is 0, jump past cursor update
+    0x527846: loc_527846:
+    0x527846: push    1                 ; Push argument 2 (value 1)
+    0x527848: push    1                 ; Push argument 1 (value 1)
+    0x52784A: call    handleGameUICursorState ; Update the game UI cursor state
+    0x52784F: add     esp, 8            ; Clean up stack
+    0x527852: loc_527852:
+    0x527852: push    esi               ; Push pointer 'a1' as argument
+    0x527853: call    processTerrainClick ; Call the main terrain click processing function
+    0x527858: add     esp, 4            ; Clean up stack
+    0x52785B: mov     eax, 1            ; Set return value to 1 (handled)
+    0x527860: pop     esi
+    0x527861: pop     ebp
+    0x527862: retn                      ; Return 1
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    int HandleTerrainClick(ClickInfo *a1) // Assuming a1 is a pointer to some click information structure
+    {
+      // a1[5] likely contains information about the click type or context.
+      // dword_BD0758 might be a flag indicating a specific game state (e.g., UI mode).
+      if ( a1->field_14 == 4 || dword_BD0758 != 0 )
+      {
+        // Update the UI cursor state, potentially changing the cursor icon or behavior.
+        handleGameUICursorState(1, 1);
+      }
+      // Delegate the actual logic for handling the terrain click to another function.
+      processTerrainClick(a1);
+      // Indicate that the click event was handled.
+      return 1;
+    }
+
+    // Global variable accessed
+    extern int dword_BD0758;
+    ```
+*   **Functionality:** This function acts as a high-level handler for clicks on the game world's terrain. It first checks a condition based on the click information (`a1[5] == 4`) or a global flag (`dword_BD0758`). If the condition is met, it calls `handleGameUICursorState` (likely to change the mouse cursor). Then, it unconditionally calls `processTerrainClick` to perform the main logic associated with clicking on the terrain (e.g., initiating movement, targeting). It always returns 1, indicating the click was processed.
+*   **Parameters:**
+    *   `a1` (struct ClickInfo\*): A pointer to a structure containing details about the click event. The member at offset 0x14 is checked against the value 4.
+*   **Return Value:**
+    *   `int` (eax): Always returns 1, signifying that the terrain click event was handled.
+*   **Global Variables/Data:**
+    *   `dword_BD0758`: A global integer variable used in the conditional check for updating the cursor state. Its exact purpose is unknown without further context, but it might relate to UI modes or states.
+*   **Movement/LoS/Collision Relevance:** Related to **Movement** initiation. This function is called when the player clicks on the terrain, which often leads to the character moving to that point via the `processTerrainClick` function.
+
+***
+
+**3. recordPlayerMovement (0x6EC8B0)**
+
+*   **Disassembly:**
+    ```assembly
+    0x6EC8B0: push    ebp
+    0x6EC8B1: mov     ebp, esp
+    0x6EC8B3: mov     eax, [ebp+arg_4]      ; Load timestamp 'a3' into eax
+    0x6EC8B6: push    ebx
+    0x6EC8B7: push    esi
+    0x6EC8B8: push    edi                   ; Save registers
+    0x6EC8B9: mov     esi, ecx              ; Move 'this' (CMovement*) pointer from ecx to esi
+    0x6EC8BB: mov     ecx, [ebp+this]       ; Load player object pointer 'a2' into ecx
+    0x6EC8BE: push    eax                   ; Push timestamp 'a3'
+    0x6EC8BF: push    ecx                   ; Push player object pointer 'a2'
+    0x6EC8C0: call    createPlayerMoveEvent ; Create a new movement event structure
+    0x6EC8C5: fld     [ebp+arg_10]          ; Load float 'a6' (likely facing or related)
+    0x6EC8C8: mov     dl, [ebp+arg_8]       ; Load char 'a4' (event subtype?) into dl
+    0x6EC8CB: mov     ecx, eax              ; Move pointer to the new event structure into ecx
+    0x6EC8CD: mov     eax, dword ptr [ebp+arg_C] ; Load int 'a5' (flags?) into eax
+    0x6EC8D0: fstp    dword ptr [ecx+3Ch]   ; Store float 'a6' into event structure at offset +0x3C
+    0x6EC8D3: mov     [ecx+51h], dl         ; Store char 'a4' into event structure at offset +0x51
+    0x6EC8D6: mov     [ecx+4Ch], eax        ; Store int 'a5' into event structure at offset +0x4C
+    0x6EC8D9: mov     eax, [esi+140h]     ; Load a value from CMovement offset +0x140 (movement flags?)
+    0x6EC8DF: add     esp, 8                ; Clean up stack from createPlayerMoveEvent call args
+    0x6EC8E2: test    al, 1                 ; Check the least significant bit
+    0x6EC8E4: jnz     short loc_6EC8EA      ; If bit 0 is set, jump
+    0x6EC8E6: test    eax, eax              ; Check if the whole value is zero
+    0x6EC8E8: jnz     short loc_6EC8EC      ; If non-zero (and bit 0 is not set), jump
+    0x6EC8EA: xor     eax, eax              ; If bit 0 is set OR value is zero, set eax to 0
+    0x6EC8EC: loc_6EC8EC:                   ; eax is now 0 if flags indicate no special movement?
+    0x6EC8EC: mov     edi, [ebp+arg_14]     ; Load pointer 'a7' into edi
+    0x6EC8EF: xor     ebx, ebx              ; Clear ebx
+    0x6EC8F1: test    eax, eax              ; Test the modified flag value from [esi+140h]
+    0x6EC8F3: setnz   bl                    ; Set bl to 1 if the flag value was non-zero (and didn't have bit 0 set)
+    0x6EC8F6: test    edi, edi              ; Check if 'a7' pointer is non-null
+    0x6EC8F8: jz      short loc_6EC901      ; If 'a7' is null, skip update
+    0x6EC8FA: mov     eax, edi              ; Move 'a7' pointer to eax
+    0x6EC8FC: call    updatePlayerEventFromMoveStatus ; Update the event based on 'a7' data
+    0x6EC901: loc_6EC901:
+    0x6EC901: push    ecx                   ; Push the new event structure pointer
+    0x6EC902: lea     ecx, [esi+138h]     ; Load address of CMovement's linked list head (offset +0x138) into ecx
+    0x6EC908: call    linkedListInsertNode  ; Insert the new event node into the list
+    0x6EC90D: cmp     dword ptr [esi+34h], 0 ; Check CMovement field at offset +0x34 (is linked?)
+    0x6EC911: jnz     short loc_6EC928      ; If non-zero, skip linking
+    0x6EC913: call    getGlobalMovementState; Get the global movement state object
+    0x6EC918: test    eax, eax              ; Check if global state exists
+    0x6EC91A: jz      short loc_6EC928      ; If not, skip linking
+    0x6EC91C: push    esi                   ; Push 'this' (CMovement*)
+    0x6EC91D: lea     ecx, [eax+118h]     ; Load address of global state's list head (offset +0x118)
+    0x6EC923: call    linkEntity            ; Link this CMovement object to the global state list
+    0x6EC928: loc_6EC928:
+    0x6EC928: test    edi, edi              ; Check if 'a7' pointer was non-null
+    0x6EC92A: jz      short loc_6EC943      ; If null, skip proximity update
+    0x6EC92C: test    ebx, ebx              ; Check the flag calculated earlier (bl)
+    0x6EC92E: jnz     short loc_6EC943      ; If flag was set, skip proximity update
+    0x6EC930: call    getGlobalMovementState; Get the global movement state object
+    0x6EC935: mov     ecx, [eax+128h]     ; Load pointer from global state offset +0x128 (Proximity manager?)
+    0x6EC93B: push    ecx                   ; Push Proximity manager pointer
+    0x6EC93C: mov     ecx, esi              ; Move 'this' (CMovement*) to ecx
+    0x6EC93E: call    UpdateMovementStateBasedOnProximity ; Update state based on proximity
+    0x6EC943: loc_6EC943:
+    0x6EC943: pop     edi                   ; Restore registers
+    0x6EC944: pop     esi
+    0x6EC945: pop     ebx
+    0x6EC946: pop     ebp
+    0x6EC947: retn    18h                   ; Return, cleaning up 0x18 bytes of arguments
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Note: Hex-Rays misinterprets some arguments and 'this'.
+    // Corrected based on disassembly:
+    // ecx = CMovement* this_movement
+    // stack: arg_0 = int* this = PlayerObject* player // Misnamed by Hex-Rays
+    // stack: arg_4 = int a2 = timestamp
+    // stack: arg_8 = char a3 = event_subtype
+    // stack: arg_C = int a4 = flags
+    // stack: arg_10 = float a5 = facing_or_other_float
+    // stack: arg_14 = MoveStatus* a6 = optional_move_status_ptr
+    void recordPlayerMovement(CMovement *this_movement, PlayerObject *player, int timestamp, char event_subtype, int flags, float facing_or_other_float, MoveStatus *optional_move_status_ptr)
+    {
+      // Create a new movement event associated with the player and timestamp.
+      PlayerMoveEvent* new_event = createPlayerMoveEvent(player, timestamp);
+
+      // Populate the event with provided data.
+      new_event->facing_or_float = facing_or_other_float; // Offset +0x3C
+      new_event->subtype = event_subtype;                // Offset +0x51
+      new_event->flags = flags;                          // Offset +0x4C
+
+      // Check some flags in the CMovement structure.
+      // Purpose unclear, but influences the 'proximity_check_needed' flag.
+      int movement_flags = this_movement->flags_140;
+      bool special_movement = false;
+      if ( (movement_flags & 1) != 0 || movement_flags == 0 ) {
+          special_movement = false; // Treat bit 0 set or all zero as not special?
+      } else {
+          special_movement = true; // Other non-zero flags indicate special movement?
+      }
+
+      bool proximity_check_needed = !special_movement; // Need proximity check if not special movement
+
+      // If an optional MoveStatus structure was provided, update the event from it.
+      if ( optional_move_status_ptr != nullptr ) {
+        updatePlayerEventFromMoveStatus(optional_move_status_ptr, new_event);
+      }
+
+      // Insert the newly created event into the CMovement's local linked list of events.
+      linkedListInsertNode(&new_event->node, &this_movement->event_list_head_138); // Insert at head/tail?
+
+      // If this CMovement object isn't already linked to the global state...
+      if ( this_movement->link_status_34 == 0 ) {
+        GlobalMovementState* global_state = getGlobalMovementState();
+        if ( global_state != nullptr ) {
+          // Link this CMovement object to the global list of active movement entities.
+          linkEntity(this_movement, &global_state->entity_list_head_118);
+          // Assume link_status_34 is updated within linkEntity or needs manual update here.
+        }
+      }
+
+      // If a MoveStatus was provided AND the proximity check is needed...
+      if ( optional_move_status_ptr != nullptr && proximity_check_needed ) {
+        GlobalMovementState* global_state = getGlobalMovementState();
+        if ( global_state != nullptr && global_state->proximity_manager_128 != nullptr ) {
+          // Update movement state based on proximity to other objects/players.
+          UpdateMovementStateBasedOnProximity(global_state->proximity_manager_128, this_movement);
+        }
+      }
+    }
+    ```
+*   **Functionality:** This function records a specific player movement action. It creates a `PlayerMoveEvent` structure, populates it with details like timestamp, flags, facing, etc. It may update this event further if a `MoveStatus` structure is provided. The event is then added to a linked list specific to the `CMovement` object (`this_movement`). If the `CMovement` object isn't already linked to the global movement system, it links it. Finally, under certain conditions (a `MoveStatus` provided and specific flags not set), it updates the movement state based on proximity to other entities.
+*   **Parameters:**
+    *   `ecx` (this\_movement): Pointer to the `CMovement` instance for the player.
+    *   `a2` (player): Pointer to the player object structure.
+    *   `a3` (timestamp): Timestamp associated with the movement event.
+    *   `a4` (event\_subtype): A character code possibly indicating the type of movement (e.g., start forward, stop, jump).
+    *   `a5` (flags): Integer flags associated with the movement.
+    *   `a6` (facing\_or\_other\_float): A float value, likely the player's facing direction or another movement parameter.
+    *   `a7` (optional\_move\_status\_ptr): An optional pointer to a `MoveStatus` structure containing more detailed current movement data.
+*   **Return Value:** `void`.
+*   **Key Variables/Structures:**
+    *   `PlayerMoveEvent`: A structure created to hold details of a single movement event. Contains fields for timestamp, flags, facing, subtype, and linked list node.
+    *   `CMovement`: The main structure (passed in `ecx`) holding the player's movement state, including a linked list of `PlayerMoveEvent`s (at offset `0x138`) and linking status (`0x34`).
+    *   `GlobalMovementState`: A global singleton or structure holding lists of active entities and potentially proximity managers.
+*   **Movement/LoS/Collision Relevance:** Core **Movement** tracking. This function logs discrete movement events (start, stop, turn, etc.) which are likely processed later to update the player's position, send network packets, and handle physics/collision. The proximity check hints at interaction with other entities.
+
+***
+
+**4. ProcessFlightStatusUpdate (0x6EF140)**
+
+*   **Disassembly:**
+    ```assembly
+    ; Function prologue/setup similar to 0x6EF0D0
+    0x6EF0D0: push    ebp
+    0x6EF0D1: mov     ebp, esp
+    0x6EF0D3: fldz                     ; Push 0.0 onto FPU stack
+    0x6EF0D5: push    esi
+    0x6EF0D6: push    edi                   ; Save registers
+    0x6EF0D7: mov     edi, [ebp+arg_4]      ; Load player object pointer 'a2' into edi
+    0x6EF0DA: mov     eax, [edi+10h]        ; Load flags from player object +0x10
+    0x6EF0DD: and     eax, 1000000h         ; Check for flight flag (0x1000000)
+    0x6EF0E2: push    ecx                   ; Save ecx (holds CMovement* this)
+    0x6EF0E3: neg     eax                   ; Create 0 or -1 based on flag presence
+    0x6EF0E5: fstp    [esp+0Ch+var_C]       ; Store 0.0 from FPU stack (arg 'a5')
+    0x6EF0E8: sbb     eax, eax              ; Create 0 (flag absent) or -1 (flag present)
+    0x6EF0EA: add     eax, 30h              ; Convert to '0' (48) or '/' (47) -> seems incorrect, likely a simple conditional add/sub
+                                         ; Should be equivalent to: (flag_present ? SOME_CODE_ENABLE : SOME_CODE_DISABLE)
+                                         ; Let's assume '0' (48) means enable flight, '1' (49) means disable (or vice-versa based on updateMovementStatus codes)
+                                         ; Rereading: neg -> sbb creates 0 or FFFFFFFF. Adding 30h -> 30h (48) or 2Fh (47).
+                                         ; The pseudocode `48 - ((flags & 0x1000000) != 0)` implies: 48 if flag OFF, 47 if flag ON.
+    0x6EF0ED: push    eax                   ; Push the calculated event code (arg 'a3')
+    0x6EF0EE: mov     esi, ecx              ; Move CMovement* 'this' from ecx to esi
+    0x6EF0F0: mov     ecx, [ebp+this]       ; Load timestamp 'a1' into ecx
+    0x6EF0F3: push    edi                   ; Push player object pointer 'a2'
+    0x6EF0F4: push    ecx                   ; Push timestamp 'a1'
+    0x6EF0F5: mov     ecx, esi              ; Move CMovement* 'this' back to ecx
+    0x6EF0F7: call    updateMovementStatus  ; Call function to update/record movement status
+    0x6EF0FC: test    eax, eax              ; Check return value of updateMovementStatus (0 = failed/no change?)
+    0x6EF0FE: jz      short loc_6EF13D      ; If 0, return 0
+    0x6EF100: test    dword ptr [edi+10h], 1000000h ; Re-check the flight flag in player object
+    0x6EF107: jz      short loc_6EF11B      ; If flight flag is OFF, jump to disable handling
+    0x6EF109: ; Flight flag is ON
+    0x6EF109: or      dword ptr [esi+44h], 1000000h ; Set flight flag (0x1000000) in CMovement status flags (offset +0x44)
+    0x6EF110: pop     edi                   ; Restore registers
+    0x6EF111: mov     eax, 1                ; Set return value to 1
+    0x6EF116: pop     esi
+    0x6EF117: pop     ebp
+    0x6EF118: retn    8                     ; Return 1
+    0x6EF11B: loc_6EF11B:                   ; Flight flag is OFF
+    0x6EF11B: test    dword ptr [esi+44h], 2000000h ; Check for another flight-related flag (0x2000000) in CMovement status
+    0x6EF122: jz      short loc_6EF12B      ; If flag 0x2000000 is OFF, skip update
+    0x6EF124: mov     ecx, esi              ; Move CMovement* 'this' to ecx
+    0x6EF126: call    updateMovementStateAfterDisablingFlying ; Call specific cleanup function
+    0x6EF12B: loc_6EF12B:
+    0x6EF12B: and     dword ptr [esi+44h], 0FEFFFFFFh ; Clear flight flag (0x1000000) in CMovement status flags
+    0x6EF132: pop     edi                   ; Restore registers
+    0x6EF133: mov     eax, 1                ; Set return value to 1
+    0x6EF138: pop     esi
+    0x6EF139: pop     ebp
+    0x6EF13A: retn    8                     ; Return 1
+    0x6EF13D: loc_6EF13D:                   ; updateMovementStatus returned 0
+    0x6EF13D: pop     edi                   ; Restore registers
+    0x6EF13E: xor     eax, eax              ; Set return value to 0
+    0x6EF140: pop     esi
+    0x6EF141: pop     ebp
+    0x6EF142: retn    8                     ; Return 0
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Corrected parameters based on disassembly:
+    // ecx = CMovement* this_movement
+    // stack: arg_0 = int timestamp
+    // stack: arg_4 = PlayerObject* player
+    int ProcessFlightStatusUpdate(CMovement *this_movement, int timestamp, PlayerObject *player)
+    {
+      // Check the flight status flag (0x1000000) in the player object's flags (offset +0x10).
+      bool is_flying = (player->flags_10 & 0x1000000) != 0;
+
+      // Determine the movement event code based on flight status.
+      // Code 48 seems to be related to disabling flight, 47 to enabling it.
+      int movement_event_code = is_flying ? 47 : 48;
+
+      // Call updateMovementStatus to record this change.
+      // Pass 0.0 as the float parameter (facing/speed?).
+      if (!updateMovementStatus(this_movement, timestamp, player, movement_event_code, 0.0f))
+      {
+        // If updateMovementStatus failed or indicated no change, return 0.
+        return 0;
+      }
+
+      // Update the CMovement structure's internal flags based on the new flight status.
+      if (is_flying)
+      {
+        // Set the flight flag (0x1000000) in CMovement's status flags (offset +0x44).
+        this_movement->status_flags_44 |= 0x1000000;
+      }
+      else
+      {
+        // Check if another flight-related flag (0x2000000) is set in CMovement status.
+        if ((this_movement->status_flags_44 & 0x2000000) != 0)
+        {
+          // If so, call a specific function to handle the transition from flying to not flying.
+          updateMovementStateAfterDisablingFlying(this_movement);
+        }
+        // Clear the main flight flag (0x1000000) in CMovement's status flags.
+        this_movement->status_flags_44 &= ~0x1000000;
+      }
+
+      // Return 1 to indicate success.
+      return 1;
+    }
+    ```
+*   **Functionality:** This function processes an update to the player's flight status. It checks a specific flag (0x1000000) in the player object's data to determine if the player is currently flying. Based on this, it calls `updateMovementStatus` with an appropriate event code (47 or 48). If that succeeds, it updates corresponding flags within the `CMovement` structure. If the player is transitioning *out* of flight, it calls an additional function (`updateMovementStateAfterDisablingFlying`) possibly for cleanup or state adjustment.
+*   **Parameters:**
+    *   `ecx` (this\_movement): Pointer to the `CMovement` instance for the player.
+    *   `a1` (timestamp): Timestamp of the status update.
+    *   `a2` (player): Pointer to the player object structure containing the flight flag at offset `0x10`.
+*   **Return Value:**
+    *   `int` (eax): 1 if the status was processed successfully, 0 otherwise (e.g., if `updateMovementStatus` returned 0).
+*   **Movement/LoS/Collision Relevance:** Directly related to **Movement**, specifically handling the transition into and out of flight mode. This involves updating internal state flags and potentially triggering specific logic for flight termination.
+
+***
+
+**5. PlayerMovement_QueueEvent_1 (0x6EF260)**
+
+*   **Disassembly:**
+    ```assembly
+    ; Function prologue/setup similar to 0x6EF230
+    0x6EF230: push    ebp
+    0x6EF231: mov     ebp, esp
+    0x6EF233: mov     eax, [ebp+arg_4]      ; Load bool/int 'a2' into eax
+    0x6EF236: neg     eax                   ; Create 0 or negative value
+    0x6EF238: sbb     eax, eax              ; Create 0 (if a2 was 0) or -1 (if a2 was non-zero)
+    0x6EF23A: push    esi                   ; Save esi
+    0x6EF23B: add     eax, 2Eh              ; Add 46: 0 + 46 = 46 ('.') or -1 + 46 = 45 ('-')
+    0x6EF23E: mov     esi, ecx              ; Move CMovement* 'this' from ecx to esi
+    0x6EF240: mov     ecx, [ebp+this]       ; Load PlayerObject* 'a1' into ecx
+    0x6EF243: push    eax                   ; Push the calculated event code (45 or 46)
+    0x6EF244: push    ecx                   ; Push PlayerObject* 'a1'
+    0x6EF245: call    createPlayerMoveEvent ; Create a new movement event structure
+    0x6EF24A: fldz                     ; Push 0.0 onto FPU stack
+    0x6EF24C: add     esp, 8                ; Clean up stack args from createPlayerMoveEvent
+    0x6EF24F: fst     dword ptr [eax+1Ch]   ; Store 0.0 into event structure at offset +0x1C
+    0x6EF252: push    eax                   ; Push the new event structure pointer
+    0x6EF253: fstp    dword ptr [eax+20h]   ; Store 0.0 into event structure at offset +0x20
+    0x6EF256: lea     ecx, [esi+138h]     ; Load address of CMovement's linked list head (+0x138) into ecx
+    0x6EF25C: mov     byte ptr [eax+51h], 1 ; Set event subtype (offset +0x51) to 1
+    0x6EF260: mov     dword ptr [eax+4Ch], 0 ; Set event flags (offset +0x4C) to 0
+    0x6EF267: mov     word ptr [eax+34h], 0 ; Set event field (offset +0x34, word size) to 0
+    0x6EF26D: call    linkedListInsertNode  ; Insert the new event node into the list
+    0x6EF272: cmp     dword ptr [esi+34h], 0 ; Check CMovement field at offset +0x34 (is linked?)
+    0x6EF276: jnz     short loc_6EF28D      ; If non-zero, skip linking
+    0x6EF278: call    getGlobalMovementState; Get the global movement state object
+    0x6EF27D: test    eax, eax              ; Check if global state exists
+    0x6EF27F: jz      short loc_6EF28D      ; If not, skip linking
+    0x6EF281: push    esi                   ; Push 'this' (CMovement*)
+    0x6EF282: lea     ecx, [eax+118h]     ; Load address of global state's list head (+0x118)
+    0x6EF288: call    linkEntity            ; Link this CMovement object to the global state list
+    0x6EF28D: loc_6EF28D:
+    0x6EF28D: pop     esi                   ; Restore esi
+    0x6EF28E: pop     ebp
+    0x6EF28F: retn    8                     ; Return, cleaning up 8 bytes of arguments
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Corrected parameters based on disassembly:
+    // ecx = CMovement* this_movement
+    // stack: arg_0 = PlayerObject* player
+    // stack: arg_4 = int condition_flag // bool-like (0 or non-zero)
+    PlayerMoveEvent* PlayerMovement_QueueEvent_1(CMovement *this_movement, PlayerObject *player, int condition_flag)
+    {
+      // Determine the event code: 45 if condition_flag is non-zero, 46 if it's zero.
+      int event_code = (condition_flag != 0) ? 45 : 46;
+
+      // Create a basic movement event.
+      PlayerMoveEvent* new_event = createPlayerMoveEvent(player, event_code);
+
+      // Initialize specific fields in the event structure.
+      new_event->field_1C = 0.0f;
+      new_event->field_20 = 0.0f;
+      new_event->subtype = 1;         // Offset +0x51
+      new_event->flags = 0;           // Offset +0x4C
+      new_event->field_34 = 0;        // Offset +0x34 (WORD)
+
+      // Insert the event into the CMovement's local queue.
+      linkedListInsertNode(&new_event->node, &this_movement->event_list_head_138);
+
+      // If this CMovement object isn't linked globally, link it.
+      if ( this_movement->link_status_34 == 0 ) {
+        GlobalMovementState* global_state = getGlobalMovementState();
+        if ( global_state != nullptr ) {
+          linkEntity(this_movement, &global_state->entity_list_head_118);
+          // Assume link_status_34 is updated within linkEntity.
+        }
+      }
+
+      // Returns the created event pointer (though not explicitly captured in disassembly return).
+      // The calling convention might imply the return is in EAX, which holds the event pointer.
+      return new_event;
+    }
+    ```
+*   **Functionality:** This function creates and queues a specific type of player movement event. The exact event code (45 or 46) depends on the `condition_flag` parameter. The event is initialized with default values (zeros for floats/flags, subtype 1) and added to the `CMovement` object's event queue. It also ensures the `CMovement` object is linked to the global movement system if it isn't already. The codes 45/46 might correspond to specific state changes or simple notifications.
+*   **Parameters:**
+    *   `ecx` (this\_movement): Pointer to the `CMovement` instance for the player.
+    *   `a1` (player): Pointer to the player object structure.
+    *   `a2` (condition\_flag): An integer treated as a boolean; determines whether event code 45 or 46 is used.
+*   **Return Value:**
+    *   `PlayerMoveEvent*` (eax): Pointer to the newly created and queued event structure.
+*   **Movement/LoS/Collision Relevance:** Belongs to the **Movement** event system. It queues specific, possibly simple, movement-related events for later processing.
+
+***
+
+**6. AppendPlayerMovementEvent (0x6EF2A0)**
+
+*   **Disassembly:**
+    ```assembly
+    0x6EF2A0: push    ebp
+    0x6EF2A1: mov     ebp, esp
+    0x6EF2A3: mov     eax, [ebp+arg_4]      ; Load bool/int 'a2' into eax
+    0x6EF2A6: neg     eax                   ; Create 0 or negative value
+    0x6EF2A8: sbb     eax, eax              ; Create 0 (if a2 was 0) or -1 (if a2 was non-zero)
+    0x6EF2AA: push    esi                   ; Save esi
+    0x6EF2AB: add     eax, 7                ; Add 7: 0 + 7 = 7 or -1 + 7 = 6
+    0x6EF2AE: mov     esi, ecx              ; Move CMovement* 'this' from ecx to esi
+    0x6EF2B0: mov     ecx, [ebp+this]       ; Load PlayerObject* 'a1' into ecx
+    0x6EF2B3: push    eax                   ; Push the calculated event code (6 or 7)
+    0x6EF2B4: push    ecx                   ; Push PlayerObject* 'a1'
+    0x6EF2B5: call    createPlayerMoveEvent ; Create a new movement event structure
+    0x6EF2BA: fldz                     ; Push 0.0 onto FPU stack
+    0x6EF2BC: add     esp, 8                ; Clean up stack args
+    0x6EF2BF: fst     dword ptr [eax+1Ch]   ; Store 0.0 into event structure at offset +0x1C
+    0x6EF2C2: push    eax                   ; Push the new event structure pointer
+    0x6EF2C3: fstp    dword ptr [eax+20h]   ; Store 0.0 into event structure at offset +0x20
+    0x6EF2C6: lea     ecx, [esi+138h]     ; Load address of CMovement's linked list head (+0x138)
+    0x6EF2CC: mov     byte ptr [eax+51h], 1 ; Set event subtype (offset +0x51) to 1
+    0x6EF2D0: mov     dword ptr [eax+4Ch], 0 ; Set event flags (offset +0x4C) to 0
+    0x6EF2D7: mov     word ptr [eax+34h], 0 ; Set event field (offset +0x34, word size) to 0
+    0x6EF2DD: call    linkedListInsertNode  ; Insert the new event node into the list
+    0x6EF2E2: cmp     dword ptr [esi+34h], 0 ; Check CMovement field at offset +0x34 (is linked?)
+    0x6EF2E6: jnz     short loc_6EF2FD      ; If non-zero, skip linking
+    0x6EF2E8: call    getGlobalMovementState; Get the global movement state object
+    0x6EF2ED: test    eax, eax              ; Check if global state exists
+    0x6EF2EF: jz      short loc_6EF2FD      ; If not, skip linking
+    0x6EF2F1: push    esi                   ; Push 'this' (CMovement*)
+    0x6EF2F2: lea     ecx, [eax+118h]     ; Load address of global state's list head (+0x118)
+    0x6EF2F8: call    linkEntity            ; Link this CMovement object to the global state list
+    0x6EF2FD: loc_6EF2FD:
+    0x6EF2FD: pop     esi                   ; Restore esi
+    0x6EF2FE: pop     ebp
+    0x6EF2FF: retn    8                     ; Return, cleaning up 8 bytes of arguments
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Corrected parameters based on disassembly:
+    // ecx = CMovement* this_movement
+    // stack: arg_0 = PlayerObject* player
+    // stack: arg_4 = int condition_flag // bool-like (0 or non-zero)
+    PlayerMoveEvent* AppendPlayerMovementEvent(CMovement *this_movement, PlayerObject *player, int condition_flag)
+    {
+      // Determine the event code: 6 if condition_flag is non-zero, 7 if it's zero.
+      int event_code = (condition_flag != 0) ? 6 : 7;
+
+      // Create a basic movement event.
+      PlayerMoveEvent* new_event = createPlayerMoveEvent(player, event_code);
+
+      // Initialize specific fields in the event structure.
+      new_event->field_1C = 0.0f;
+      new_event->field_20 = 0.0f;
+      new_event->subtype = 1;         // Offset +0x51
+      new_event->flags = 0;           // Offset +0x4C
+      new_event->field_34 = 0;        // Offset +0x34 (WORD)
+
+      // Insert the event into the CMovement's local queue.
+      linkedListInsertNode(&new_event->node, &this_movement->event_list_head_138);
+
+      // If this CMovement object isn't linked globally, link it.
+      if ( this_movement->link_status_34 == 0 ) {
+        GlobalMovementState* global_state = getGlobalMovementState();
+        if ( global_state != nullptr ) {
+          linkEntity(this_movement, &global_state->entity_list_head_118);
+          // Assume link_status_34 is updated within linkEntity.
+        }
+      }
+
+      // Returns the created event pointer (in EAX).
+      return new_event;
+    }
+    ```
+*   **Functionality:** Very similar to `PlayerMovement_QueueEvent_1`, but this function creates and queues events with codes 6 or 7 based on the `condition_flag`. These codes likely represent different simple movement states or notifications compared to codes 45/46. It initializes the event with default values and ensures the `CMovement` object is linked globally.
+*   **Parameters:**
+    *   `ecx` (this\_movement): Pointer to the `CMovement` instance for the player.
+    *   `a1` (player): Pointer to the player object structure.
+    *   `a2` (condition\_flag): An integer treated as a boolean; determines whether event code 6 or 7 is used.
+*   **Return Value:**
+    *   `PlayerMoveEvent*` (eax): Pointer to the newly created and queued event structure.
+*   **Movement/LoS/Collision Relevance:** Part of the **Movement** event system. Queues specific movement-related events (codes 6/7) for later processing.
+
+***
+
+**7. sendMovementPacketFallback (0x6F0C70)**
+
+*   **Disassembly:**
+    ```assembly
+    0x6F0C70: push    ebp
+    0x6F0C71: mov     ebp, esp
+    0x6F0C73: mov     eax, [ebp+arg_C]      ; Load flags 'a4' into eax
+    0x6F0C76: mov     edx, [ebp+0Ch]        ; Load high dword of GUID 'a2' into edx
+    0x6F0C79: push    esi                   ; Save esi
+    0x6F0C7A: push    eax                   ; Push flags 'a4'
+    0x6F0C7B: mov     eax, [ebp+this]       ; Load low dword of GUID 'a2' into eax
+    0x6F0C7E: mov     esi, ecx              ; Move CMovement* 'this' from ecx to esi
+    0x6F0C80: mov     ecx, [ebp+arg_8]      ; Load timestamp 'a3' into ecx
+    0x6F0C83: push    ecx                   ; Push timestamp 'a3'
+    0x6F0C84: push    edx                   ; Push high dword of GUID 'a2'
+    0x6F0C85: push    eax                   ; Push low dword of GUID 'a2'
+    0x6F0C86: mov     ecx, esi              ; Move CMovement* 'this' back to ecx
+    0x6F0C88: call    setUnitMovement       ; Call function to update internal movement state
+    0x6F0C8D: test    eax, eax              ; Check return value of setUnitMovement (success?)
+    0x6F0C8F: jz      short loc_6F0CDC      ; If failed, skip packet sending
+    0x6F0C91: mov     ecx, [esi+144h]     ; Load pointer from CMovement+0x144 (PlayerObject*)
+    0x6F0C97: mov     eax, [ecx+8]        ; Load pointer from PlayerObject+0x8 (GUID struct*)
+    0x6F0C9A: mov     edx, [eax]          ; Load low dword of player's own GUID
+    0x6F0C9C: cmp     edx, dword ptr qword_CA1238 ; Compare with global player GUID low dword
+    0x6F0CA2: jnz     short loc_6F0CDC      ; If low dword mismatch, skip
+    0x6F0CA4: mov     eax, [eax+4]        ; Load high dword of player's own GUID
+    0x6F0CA7: cmp     eax, dword ptr qword_CA1238+4 ; Compare with global player GUID high dword
+    0x6F0CAD: jnz     short loc_6F0CDC      ; If high dword mismatch, skip
+    0x6F0CAF: ; GUID matches the main player GUID
+    0x6F0CAF: call    getGlobalMovementState; Get the global movement state object
+    0x6F0CB4: fldz                     ; Push 0.0 onto FPU stack
+    0x6F0CB6: push    0FFh                ; Push 255 (unknown parameter)
+    0x6F0CBB: push    0                   ; Push 0 (unknown parameter)
+    0x6F0CBD: push    0                   ; Push 0 (unknown parameter)
+    0x6F0CBF: push    0                   ; Push 0.0 (float parameter) - FPU value is ignored
+    0x6F0CC1: push    ecx                   ; Argument Misused? Passing global state pointer? Should be timestamp?
+    0x6F0CC2: mov     ecx, [eax+128h]     ; Load pointer from global state +0x128 (ProximityMgr*?)
+    0x6F0CC8: fstp    [esp+18h+var_18]    ; Store 0.0 into stack slot (arg for SendUnitMovementPacket)
+    0x6F0CCB: push    38Dh                ; Push 909 (Movement Opcode: MSG_MOVE_FALL_LAND ?)
+    0x6F0CD0: push    ecx                   ; Push ProximityMgr*? (Likely incorrect, should be PlayerObject*?)
+    0x6F0CD1: mov     ecx, [esi+144h]     ; Load PlayerObject* from CMovement+0x144 into ecx
+    0x6F0CD7: call    SendUnitMovementPacket; Send the actual movement packet
+    0x6F0CDC: loc_6F0CDC:
+    0x6F0CDC: pop     esi                   ; Restore esi
+    0x6F0CDD: pop     ebp
+    0x6F0CDE: retn    10h                   ; Return, cleaning up 0x10 bytes of arguments
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Corrected parameters based on disassembly:
+    // ecx = CMovement* this_movement
+    // stack: arg_0 = uint64_t target_guid // Low dword at this = [ebp+this], High dword at 0Ch = [ebp+0Ch]
+    // stack: arg_8 = int timestamp
+    // stack: arg_C = int flags
+    int sendMovementPacketFallback(CMovement *this_movement, uint64_t target_guid, int timestamp, int flags)
+    {
+      // Update the internal movement state based on the provided parameters.
+      if (setUnitMovement(this_movement, target_guid, timestamp, flags))
+      {
+        // Check if the object associated with this movement is the main player character.
+        PlayerObject* player = this_movement->player_object_ptr_144; // Offset +0x144
+        if (player != nullptr && player->guid_struct_ptr_8 != nullptr)
+        {
+          uint64_t player_guid = player->guid_struct_ptr_8->guid; // Assume struct at +8 holds GUID
+          if (player_guid.raw == qword_CA1238.raw) // Compare with the global player GUID
+          {
+            // If it is the main player, send a specific movement packet (Opcode 909).
+            GlobalMovementState* global_state = getGlobalMovementState();
+            if (global_state != nullptr)
+            {
+              // Note: Parameters passed to SendUnitMovementPacket seem suspect based on registers used.
+              // It might expect the PlayerObject* in ecx, but ecx holds PlayerObject* at the time of call.
+              // The ProximityMgr* seems incorrectly pushed. Needs verification.
+              // Assuming PlayerObject* is passed via ECX as per standard call convention:
+              SendUnitMovementPacket(
+                  player, // Passed via ECX
+                  909,    // MSG_MOVE_FALL_LAND or similar?
+                  0.0f,   // timestamp/time_elapsed?
+                  0.0f,   // float param 1
+                  0,      // int param 1
+                  0,      // int param 2
+                  255     // int param 3
+              );
+              // The return value of SendUnitMovementPacket is ignored here.
+            }
+          }
+        }
+      }
+      // Return value seems to be implicitly whatever EAX held last (likely from setUnitMovement or SendUnitMovementPacket if it modified EAX).
+      // Hex-Rays interpretation as _DWORD* is likely incorrect. Function probably returns int or void.
+      return 1; // Assuming success if code path reaches here, though EAX isn't explicitly set to 1.
+    }
+
+    // Global variable accessed
+    extern uint64_t qword_CA1238; // Player's own GUID
+    ```
+*   **Functionality:** This function acts as a fallback or specific case for sending movement data. It first calls `setUnitMovement` to update the internal state. If successful, it checks if the movement object belongs to the main player character by comparing its GUID with a global player GUID (`qword_CA1238`). If it matches, it retrieves the global movement state and sends a specific movement packet (opcode 909, possibly `MSG_MOVE_FALL_LAND` or a similar state notification) using `SendUnitMovementPacket`.
+*   **Parameters:**
+    *   `ecx` (this\_movement): Pointer to the `CMovement` instance.
+    *   `a2` (target\_guid): A 64-bit GUID, likely of the target or the unit moving.
+    *   `a3` (timestamp): Timestamp for the movement update.
+    *   `a4` (flags): Integer flags related to the movement state.
+*   **Return Value:** Unclear from the disassembly, likely `int` or `void`. EAX is not consistently set before returning. Might return the result of `setUnitMovement`.
+*   **Global Variables/Data:**
+    *   `qword_CA1238`: The 64-bit GUID of the player's own character.
+*   **Movement/LoS/Collision Relevance:** Related to **Movement** networking. It sends a specific movement packet (Opcode 909) for the player character under certain conditions, possibly as a fallback or for specific events like landing after a fall.
+
+***
+
+**8. processStrafeStop (0x6F0F20)**
+
+*   **Disassembly:**
+    ```assembly
+    ; Function prologue/setup similar to 0x6F0F10
+    0x6F0F10: push    ebp
+    0x6F0F11: mov     ebp, esp
+    0x6F0F13: fldz                     ; Push 0.0 onto FPU stack
+    0x6F0F15: mov     eax, [ebp+arg_4]      ; Load PlayerObject* 'a2' into eax
+    0x6F0F18: push    esi
+    0x6F0F19: push    edi                   ; Save registers
+    0x6F0F1A: push    ecx                   ; Save CMovement* 'this'
+    0x6F0F1B: fstp    [esp+0Ch+var_C]       ; Store 0.0 (arg 'a5')
+    0x6F0F1E: mov     esi, ecx              ; Move CMovement* 'this' from ecx to esi
+    0x6F0F20: mov     ecx, [ebp+this]       ; Load timestamp 'a1' into ecx
+    0x6F0F23: mov     edi, [esi+44h]        ; Load current status flags from CMovement+0x44 into edi
+    0x6F0F26: push    5                     ; Push event code 5 (Stop Strafe?)
+    0x6F0F28: push    eax                   ; Push PlayerObject* 'a2'
+    0x6F0F29: push    ecx                   ; Push timestamp 'a1'
+    0x6F0F2A: mov     ecx, esi              ; Move CMovement* 'this' back to ecx
+    0x6F0F2C: call    updateMovementStatus  ; Update/record the Stop Strafe event
+    0x6F0F31: test    eax, eax              ; Check if update was successful
+    0x6F0F33: jz      short loc_6F0F5E      ; If failed, return 0
+    0x6F0F35: push    edi                   ; Push the original status flags
+    0x6F0F36: mov     ecx, esi              ; Move CMovement* 'this' to ecx
+    0x6F0F38: call    isStrafeStopRemovable ; Check if the strafe stop can be immediately removed/ignored
+    0x6F0F3D: test    eax, eax              ; Check return value
+    0x6F0F3F: jz      short loc_6F0F5E      ; If not removable, return 0
+    0x6F0F41: test    dword ptr [esi+44h], offset unk_C0000F ; Check specific flags (Strafe Left/Right?) in current CMovement status
+    0x6F0F48: jnz     short loc_6F0F5E      ; If any strafe flags are still set, return 0 (strafe didn't actually stop?)
+    0x6F0F4A: push    1                     ; Push argument 1 (value 1)
+    0x6F0F4C: mov     ecx, esi              ; Move CMovement* 'this' to ecx
+    0x6F0F4E: call    CMovement__sub_6EAF50 ; Call a related CMovement function (potentially finalize stop?)
+    0x6F0F53: pop     edi                   ; Restore registers
+    0x6F0F54: mov     eax, 1                ; Set return value to 1
+    0x6F0F59: pop     esi
+    0x6F0F5A: pop     ebp
+    0x6F0F5B: retn    8                     ; Return 1
+    0x6F0F5E: loc_6F0F5E:
+    0x6F0F5E: pop     edi                   ; Restore registers
+    0x6F0F5F: xor     eax, eax              ; Set return value to 0
+    0x6F0F61: pop     esi
+    0x6F0F62: pop     ebp
+    0x6F0F63: retn    8                     ; Return 0
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Corrected parameters based on disassembly:
+    // ecx = CMovement* this_movement
+    // stack: arg_0 = int timestamp
+    // stack: arg_4 = PlayerObject* player
+    int processStrafeStop(CMovement *this_movement, int timestamp, PlayerObject *player)
+    {
+      // Store the movement flags *before* potentially updating them.
+      int original_status_flags = this_movement->status_flags_44; // Offset +0x44
+
+      // Update movement status with event code 5 (presumably MSG_MOVE_STOP_STRAFE).
+      if (!updateMovementStatus(this_movement, timestamp, player, 5, 0.0f))
+      {
+        return 0; // Failed to update status
+      }
+
+      // Check if this strafe stop event is redundant or can be ignored based on current state.
+      if (!isStrafeStopRemovable(this_movement, original_status_flags))
+      {
+        return 0; // Stop cannot be removed/ignored
+      }
+
+      // Check if any strafe flags (e.g., MOVEFLAG_STRAFE_LEFT / MOVEFLAG_STRAFE_RIGHT)
+      // are still set in the *current* status flags.
+      // unk_C0000F likely represents (MOVEFLAG_STRAFE_LEFT | MOVEFLAG_STRAFE_RIGHT).
+      if ((this_movement->status_flags_44 & (MOVEFLAG_STRAFE_LEFT | MOVEFLAG_STRAFE_RIGHT)) != 0)
+      {
+        return 0; // Strafe flags still set, so didn't really stop strafing?
+      }
+
+      // If all checks pass, call another function to potentially finalize the stop state.
+      CMovement::sub_6EAF50(this_movement, 1); // Pass 1 as an argument
+
+      return 1; // Success
+    }
+    ```
+*   **Functionality:** This function handles the logic for stopping a strafe movement. It records a "stop strafe" event (code 5) using `updateMovementStatus`. Then, it performs several checks: `isStrafeStopRemovable` determines if the stop event is valid or necessary given the current state. It also checks if the actual strafe movement flags are now cleared in the `CMovement` status. If all conditions are met (stop recorded, removable, flags cleared), it calls `CMovement::sub_6EAF50` (likely to perform final state cleanup or packet sending related to stopping).
+*   **Parameters:**
+    *   `ecx` (this\_movement): Pointer to the `CMovement` instance for the player.
+    *   `a1` (timestamp): Timestamp of the stop strafe event.
+    *   `a2` (player): Pointer to the player object structure.
+*   **Return Value:**
+    *   `int` (eax): 1 if the strafe stop was processed successfully, 0 otherwise.
+*   **Global Variables/Data:**
+    *   `unk_C0000F`: A constant value used as a bitmask, likely representing `MOVEFLAG_STRAFE_LEFT | MOVEFLAG_STRAFE_RIGHT`.
+*   **Movement/LoS/Collision Relevance:** Directly related to **Movement** control, specifically handling the termination of strafing movement and updating the associated state.
+
+***
+
+**9. handleUnitTeleport (0x6F1130)**
+
+*   **Disassembly:**
+    ```assembly
+    ; Function prologue/setup similar to 0x6F1120
+    0x6F1120: push    ebp
+    0x6F1121: mov     ebp, esp
+    0x6F1123: fldz                     ; Push 0.0 onto FPU stack
+    0x6F1125: mov     eax, [ebp+this]       ; Load timestamp 'a1' into eax
+    0x6F1128: push    esi
+    0x6F1129: mov     esi, [ebp+arg_4]      ; Load TeleportData* 'a2' into esi
+    0x6F112C: push    edi                   ; Save registers
+    0x6F112D: push    ecx                   ; Save CMovement* 'this'
+    0x6F112E: fstp    [esp+0Ch+var_C]       ; Store 0.0 (arg 'a5')
+    0x6F1131: push    2Ch                   ; Push event code 44 (Teleport Ack?)
+    0x6F1133: push    esi                   ; Push TeleportData* 'a2' (used as PlayerObject* by updateMovementStatus) -> Type mismatch?
+    0x6F1134: push    eax                   ; Push timestamp 'a1'
+    0x6F1135: mov     edi, ecx              ; Move CMovement* 'this' from ecx to edi
+    0x6F1137: call    updateMovementStatus  ; Update movement status with teleport event
+    0x6F113C: test    eax, eax              ; Check if update was successful
+    0x6F113E: jnz     short loc_6F1146      ; If successful, continue
+    0x6F1140: pop     edi                   ; Restore registers
+    0x6F1141: pop     esi
+    0x6F1142: pop     ebp
+    0x6F1143: retn    8                     ; Return 0
+    0x6F1146: loc_6F1146:
+    0x6F1146: mov     eax, [esi+8]        ; Load low dword of target GUID from TeleportData+0x8
+    0x6F1149: mov     ecx, [esi+0Ch]        ; Load high dword of target GUID from TeleportData+0xC
+    0x6F114C: mov     edx, eax              ; Copy low dword
+    0x6F114E: or      edx, ecx              ; Check if GUID is non-zero
+    0x6F1150: jz      short loc_6F116A      ; If GUID is zero, use alternative data path
+    0x6F1152: ; Path for non-zero GUID (Targeted Teleport?)
+    0x6F1152: movzx   edx, byte ptr [esi+16h] ; Load byte flag from TeleportData+0x16
+    0x6F1156: fld     dword ptr [esi+24h]   ; Load facing from TeleportData+0x24
+    0x6F1159: push    edx                   ; Push byte flag (arg 7)
+    0x6F115A: push    0                     ; Push 0 (arg 6)
+    0x6F115C: push    1                     ; Push 1 (arg 5, float treated as int)
+    0x6F115E: push    ecx                   ; Push high dword of GUID (arg 3)
+    0x6F115F: add     esi, 18h              ; Point esi to position data (TeleportData+0x18)
+    0x6F1162: fstp    [esp+18h+var_18]    ; Store facing on stack (arg 4)
+    0x6F1165: push    esi                   ; Push position pointer (arg 2)
+    0x6F1166: push    ecx                   ; Argument misuse? Pushing high GUID again. Should be part of GUID low?
+    0x6F1167: push    eax                   ; Push low dword of GUID (arg 1)
+    0x6F1168: jmp     short loc_6F1182      ; Jump to call updatePlayerMovement
+    0x6F116A: loc_6F116A:                   ; Path for zero GUID (Non-Targeted Teleport?)
+    0x6F116A: fld     dword ptr [esi+34h]   ; Load facing from TeleportData+0x34
+    0x6F116D: push    0FFh                ; Push 255 (byte flag, arg 7)
+    0x6F1172: push    0                     ; Push 0 (arg 6)
+    0x6F1174: push    1                     ; Push 1 (arg 5, float treated as int)
+    0x6F1176: push    ecx                   ; Push high dword (0) (arg 3)
+    0x6F1177: fstp    [esp+18h+var_18]    ; Store facing on stack (arg 4)
+    0x6F117A: add     esi, 28h              ; Point esi to position data (TeleportData+0x28)
+    0x6F117D: push    esi                   ; Push position pointer (arg 2)
+    0x6F117E: push    0                     ; Push low dword (0) (arg 1)
+    0x6F1180: push    0                   ; Argument misuse? Placeholder for high GUID?
+    0x6F1182: loc_6F1182:
+    0x6F1182: mov     ecx, edi              ; Move CMovement* 'this' back to ecx
+    0x6F1184: call    updatePlayerMovement  ; Call function to apply the teleport movement/position change
+    0x6F1189: test    dword ptr [edi+44h], offset unk_C0100F ; Check specific flags in CMovement status (e.g., IsFalling)
+    0x6F1190: jz      short loc_6F11A5      ; If flags not set, skip
+    0x6F1192: call    getGlobalMovementState; Get the global movement state object
+    0x6F1197: mov     eax, [eax+12Ch]     ; Load pointer from global state +0x12C (MovementDataMgr*?)
+    0x6F119D: push    eax                   ; Push MovementDataMgr* pointer
+    0x6F119E: mov     ecx, edi              ; Move CMovement* 'this' to ecx
+    0x6F11A0: call    getMovementDataOrCreate ; Get/create movement data associated with this CMovement object
+    0x6F11A5: loc_6F11A5:
+    0x6F11A5: pop     edi                   ; Restore registers
+    0x6F11A6: mov     eax, 1                ; Set return value to 1
+    0x6F11AB: pop     esi
+    0x6F11AC: pop     ebp
+    0x6F11AD: retn    8                     ; Return 1
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Corrected parameters based on disassembly:
+    // ecx = CMovement* this_movement
+    // stack: arg_0 = int timestamp
+    // stack: arg_4 = TeleportData* teleport_data
+    int handleUnitTeleport(CMovement *this_movement, int timestamp, TeleportData *teleport_data)
+    {
+      // Update movement status with teleport event code 44.
+      // Note: Passing TeleportData* where PlayerObject* might be expected.
+      // This might be safe if the first few fields align or if updateMovementStatus handles it.
+      if (!updateMovementStatus(this_movement, timestamp, (PlayerObject*)teleport_data, 44, 0.0f))
+      {
+        return 0; // Failed
+      }
+
+      // Get target GUID and position/facing data from the TeleportData structure.
+      uint64_t target_guid = teleport_data->target_guid_8; // Offset +0x8
+      float* position_ptr;
+      float facing;
+      unsigned char flag_byte;
+
+      if (target_guid.raw != 0)
+      {
+        // Use data for targeted teleport (offsets 0x16, 0x18, 0x24)
+        flag_byte = teleport_data->flag_byte_16;     // Offset +0x16
+        position_ptr = &teleport_data->pos_x_18;     // Offset +0x18
+        facing = teleport_data->facing_24;           // Offset +0x24
+        updatePlayerMovement(this_movement, target_guid, position_ptr, facing, 1.0f, 0, flag_byte);
+      }
+      else
+      {
+        // Use data for non-targeted teleport (offsets 0x28, 0x34)
+        position_ptr = &teleport_data->pos_x_28;     // Offset +0x28
+        facing = teleport_data->facing_34;           // Offset +0x34
+        flag_byte = 255; // Use default flag 255
+        updatePlayerMovement(this_movement, 0ULL, position_ptr, facing, 1.0f, 0, flag_byte);
+      }
+
+      // Check if specific flags (e.g., MOVEFLAG_FALLING) are set in CMovement status.
+      // unk_C0100F likely represents MOVEFLAG_FALLING or similar flags cleared by teleport.
+      if ((this_movement->status_flags_44 & MOVEFLAG_FALLING) != 0) // Example flag
+      {
+        GlobalMovementState* global_state = getGlobalMovementState();
+        if (global_state != nullptr && global_state->movement_data_manager_12C != nullptr)
+        {
+          // Ensure movement data exists for this CMovement object.
+          getMovementDataOrCreate(global_state->movement_data_manager_12C, this_movement);
+        }
+      }
+
+      return 1; // Success
+    }
+
+    // Assumed structure for TeleportData
+    struct TeleportData {
+        // ... (potential fields before offset 8)
+        uint64_t target_guid_8; // Offset +0x8
+        char unknown_10[6];     // Offset +0x10
+        unsigned char flag_byte_16; // Offset +0x16
+        char unknown_17;        // Offset +0x17
+        float pos_x_18;         // Offset +0x18
+        float pos_y_1C;         // Offset +0x1C
+        float pos_z_20;         // Offset +0x20
+        float facing_24;        // Offset +0x24
+        float alt_pos_x_28;     // Offset +0x28
+        float alt_pos_y_2C;     // Offset +0x2C
+        float alt_pos_z_30;     // Offset +0x30
+        float alt_facing_34;    // Offset +0x34
+        // ...
+    };
+    ```
+*   **Functionality:** This function handles the application of a teleport effect. It first records a teleport event (code 44) via `updateMovementStatus`. It then reads data (target GUID, position, facing) from the `teleport_data` structure. Based on whether a target GUID is present, it calls `updatePlayerMovement` with the appropriate position, facing, and flags to instantly move the player. Finally, if the player was previously in a state affected by teleport (like falling, indicated by flags like `unk_C0100F`), it ensures associated movement data is created or retrieved using `getMovementDataOrCreate`.
+*   **Parameters:**
+    *   `ecx` (this\_movement): Pointer to the `CMovement` instance for the player.
+    *   `a1` (timestamp): Timestamp of the teleport event.
+    *   `a2` (teleport\_data): Pointer to a structure containing teleport details (target GUID, destination coordinates, facing, flags).
+*   **Return Value:**
+    *   `int` (eax): 1 if the teleport was handled successfully, 0 otherwise.
+*   **Global Variables/Data:**
+    *   `unk_C0100F`: A constant bitmask used to check CMovement status flags, likely related to states cleared or affected by teleporting (e.g., falling).
+*   **Movement/LoS/Collision Relevance:** Core **Movement** function for handling instantaneous position changes (teleportation). It updates the player's position and facing based on server data.
+
+***
+
+**10. CMovement::sub_6F11B0 (0x6F1210)**
+
+*   **Disassembly:**
+    ```assembly
+    ; Function prologue/setup similar to 0x6F11B0
+    0x6F11B0: push    ebp
+    0x6F11B1: mov     ebp, esp
+    0x6F11B3: mov     eax, [ebp+arg_4]      ; Load SplineData* 'a5' into eax
+    0x6F11B6: push    esi
+    0x6F11B7: push    edi                   ; Save registers
+    0x6F11B8: push    eax                   ; Push SplineData* 'a5'
+    0x6F11B9: mov     esi, ecx              ; Move CMovement* 'a1' from ecx to esi
+    0x6F11BB: call    updateSplineDestination ; Update destination based on spline data
+    0x6F11C0: cmp     [ebp+arg_C], 0        ; Check flag 'a7' (bool)
+    0x6F11C4: jz      short loc_6F11DA      ; If 'a7' is false, skip movement processing
+    0x6F11C6: push    1                     ; Push 1 (arg 4)
+    0x6F11C8: push    0                     ; Push 0 (arg 3)
+    0x6F11CA: mov     ecx, esi              ; Move CMovement* 'a1' to ecx
+    0x6F11CC: call    process_character_movement ; Process movement (physics?)
+    0x6F11D1: push    0                     ; Push 0 (arg 1)
+    0x6F11D3: mov     ecx, esi              ; Move CMovement* 'a1' to ecx
+    0x6F11D5: call    CMovement__sub_6EAF50 ; Call related CMovement function
+    0x6F11DA: loc_6F11DA:
+    0x6F11DA: mov     edi, [ebp+arg_8]      ; Load flags 'a6' into edi
+    0x6F11DD: mov     ecx, [ebp+arg_0]      ; Load MovementData* 'a4' into ecx
+    0x6F11E0: push    edi                   ; Push flags 'a6'
+    0x6F11E1: push    ecx                   ; Push MovementData* 'a4'
+    0x6F11E2: mov     ecx, esi              ; Move CMovement* 'a1' to ecx
+    0x6F11E4: call    updateSplineAndMovementData ; Update spline state and movement data
+    0x6F11E9: mov     edx, [esi+0BCh]     ; Load pointer from CMovement+0xBC (SplineInfo*?)
+    0x6F11EF: and     edi, 1800000h         ; Mask flags 'a6' to get flight/swim related bits?
+    0x6F11F5: push    edi                   ; Push masked flags 'a6' (treated as float* by HexRays?)
+    0x6F11F6: add     edx, 1F8h             ; Calculate offset within SplineInfo (+0x1F8)
+    0x6F11FC: push    edx                   ; Push pointer to SplineInfo+0x1F8 (target position?)
+    0x6F11FD: mov     ecx, esi              ; Move CMovement* 'a1' to ecx
+    0x6F11FF: call    conditionallyUpdateTargetPosition ; Update target position based on flags
+    0x6F1204: mov     eax, [esi+0BCh]     ; Load SplineInfo* from CMovement+0xBC
+    0x6F120A: mov     ecx, [eax+2Ch]        ; Load value from SplineInfo+0x2C
+    0x6F120D: mov     [eax+28h], ecx        ; Store value into SplineInfo+0x28 (Copy field?)
+    0x6F1210: mov     eax, [esi+0BCh]     ; Load SplineInfo* from CMovement+0xBC
+    0x6F1216: or      dword ptr [eax+20h], 100h ; Set flag 0x100 in SplineInfo+0x20
+    0x6F121D: call    getGlobalMovementState; Get global movement state
+    0x6F1222: mov     edx, [eax+12Ch]     ; Load pointer from global state +0x12C (MovementDataMgr*)
+    0x6F1228: push    edx                   ; Push MovementDataMgr*
+    0x6F1229: mov     ecx, esi              ; Move CMovement* 'a1' to ecx
+    0x6F122B: call    completeMovementTransition ; Complete the movement state transition
+    0x6F1230: pop     edi                   ; Restore registers
+    0x6F1231: pop     esi
+    0x6F1232: pop     ebp
+    0x6F1233: retn    10h                   ; Return, cleaning 0x10 bytes of arguments
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Corrected parameters based on disassembly:
+    // ecx = CMovement* a1
+    // stack: arg_0 = MovementData* a4
+    // stack: arg_4 = SplineData* a5
+    // stack: arg_8 = int a6 (flags)
+    // stack: arg_C = int a7 (bool flag)
+    // FPU args a2, a3 are passed to process_character_movement if a7 is true.
+    void CMovement::sub_6F11B0(MovementData* a4, SplineData* a5, int a6_flags, int a7_process_move_flag /*, FPU args a2, a3 */)
+    {
+      CMovement* this_movement = this; // Assuming 'this' is passed in ecx
+
+      // Update the destination point of the current spline based on SplineData.
+      updateSplineDestination(this_movement, a5);
+
+      // If the flag indicates, process character movement immediately.
+      if ( a7_process_move_flag )
+      {
+        // process_character_movement might take FPU arguments passed originally to sub_6F11B0.
+        process_character_movement(this_movement, /* FPU arg a2, FPU arg a3, */ 0, 1);
+        // Call another related function, possibly to finalize the immediate move processing.
+        CMovement::sub_6EAF50(this_movement, 0);
+      }
+
+      // Update the spline state itself and the associated MovementData structure.
+      updateSplineAndMovementData(this_movement, a4, a6_flags);
+
+      // Get the spline information structure.
+      SplineInfo* spline_info = this_movement->spline_info_ptr_BC; // Offset +0xBC
+      if (spline_info != nullptr)
+      {
+          // Conditionally update the target position based on specific flags (flight/swim?).
+          int flight_swim_flags = a6_flags & 0x1800000; // Mask for specific flags
+          conditionallyUpdateTargetPosition(this_movement, &spline_info->target_pos_1F8, flight_swim_flags); // Target pos at +0x1F8
+
+          // Copy a field within the spline info (purpose unknown).
+          spline_info->field_28 = spline_info->field_2C;
+
+          // Set a flag in the spline info (completion flag?).
+          spline_info->flags_20 |= 0x100;
+      }
+
+      // Complete the overall movement state transition, potentially involving global state.
+      GlobalMovementState* global_state = getGlobalMovementState();
+      if (global_state != nullptr && global_state->movement_data_manager_12C != nullptr)
+      {
+        completeMovementTransition(global_state->movement_data_manager_12C, this_movement);
+      }
+    }
+    ```
+*   **Functionality:** This complex function appears to handle the setup and finalization of spline-based movement. It updates the spline's destination, optionally processes immediate physics/movement, updates the spline state and associated `MovementData`, conditionally adjusts the final target position based on flags (possibly for flight/swimming height), updates flags within the spline structure, and finally calls `completeMovementTransition` to finalize the state, potentially linking/unlinking from global systems.
+*   **Parameters:**
+    *   `ecx` (a1): Pointer to the `CMovement` instance.
+    *   `a4` (arg\_0): Pointer to a `MovementData` structure.
+    *   `a5` (arg\_4): Pointer to a `SplineData` structure.
+    *   `a6_flags` (arg\_8): Integer flags controlling behaviour. Mask `0x1800000` is checked.
+    *   `a7_process_move_flag` (arg\_C): Boolean flag; if true, `process_character_movement` is called.
+    *   `a2`, `a3` (ST1, ST0): Potential FPU arguments passed to `process_character_movement`.
+*   **Return Value:** `void`.
+*   **Movement/LoS/Collision Relevance:** Core **Movement** function, specifically handling spline-based movement paths. It orchestrates updates to spline data, movement data, target positions, and state transitions.
+
+***
+
+**11. IsPointWithinActionRadius (0x715C70)**
+
+*   **Disassembly:**
+    ```assembly
+    0x715C70: push    ebp
+    0x715C71: mov     ebp, esp
+    0x715C73: mov     eax, [ebp+this]       ; Load interaction type index 'this' into eax
+    0x715C76: sub     esp, 0Ch              ; Allocate space for local position vector
+    0x715C79: push    esi
+    0x715C7A: lea     esi, [eax+eax*2]      ; Calculate offset: index * 3
+    0x715C7D: add     esi, esi              ; Calculate offset: index * 6
+    0x715C7F: add     esi, esi              ; Calculate offset: index * 12
+    0x715C81: cmp     byte_ADAAB8[esi], 0   ; Check flag at base + (index*12) in byte_ADAAB8 array
+    0x715C88: jz      short loc_715CE6      ; If flag is 0, return true (no check needed)
+    0x715C8A: fldz                     ; Push 0.0
+    0x715C8C: fcomp   dword ptr [esi+0ADAABCh] ; Compare 0.0 with range value at base + (index*12) + 4 in float array algn_ADAAB9
+    0x715C92: fnstsw  ax                  ; Get FPU status word
+    0x715C94: test    ah, 44h             ; Check C0, C2 flags (0.0 <= range_value)
+    0x715C97: jnp     short loc_715CE6      ; If 0.0 is NOT less than range_value (i.e., range is <= 0), return true (no check needed)
+    0x715C99: ; Range check is required
+    0x715C99: mov     eax, [ecx]          ; Load vtable pointer from PlayerObject* 'a2' (passed in ecx)
+    0x715C9B: mov     eax, [eax+2Ch]        ; Load virtual function pointer (GetPosition) from vtable offset +0x2C
+    0x715C9E: lea     edx, [ebp+var_C]      ; Load address of local position buffer into edx
+    0x715CA1: push    edx                   ; Push address for position result
+    0x715CA2: call    eax                   ; Call virtual GetPosition(PlayerObject*, float* out_pos)
+    0x715CA4: mov     ecx, [ebp+arg_4]      ; Load target point pointer 'a3' into ecx
+    0x715CA7: fld     dword ptr [ecx]       ; Load target_x
+    0x715CA9: fsub    dword ptr [eax]       ; Subtract player_x (result is in eax)
+    0x715CAB: fld     dword ptr [ecx+4]     ; Load target_y
+    0x715CAE: fsub    dword ptr [eax+4]     ; Subtract player_y
+    0x715CB1: fld     dword ptr [ecx+8]     ; Load target_z
+    0x715CB4: fsub    dword ptr [eax+8]     ; Subtract player_z (st0=dz, st1=dy, st2=dx)
+    0x715CB7: fld     st(2)                 ; Duplicate dx (st0=dx, st1=dz, st2=dy, st3=dx)
+    0x715CB9: fmulp   st(3), st             ; dx*dx, pop (st0=dz, st1=dy, st2=dx*dx)
+    0x715CBB: fmul    st, st                ; dz*dz (st0=dz*dz, st1=dy, st2=dx*dx)
+    0x715CBD: faddp   st(2), st             ; dy*dy + dx*dx, pop (st0=dz*dz, st1=dy*dy+dx*dx)
+    0x715CBF: fmul    st, st                ; (dy*dy+dx*dx)^2 -> ERROR, should be fmul st(1) -> dy*dy
+                                         ; Correct sequence should be: fld st(1), fmul st, st(1), faddp st(2), fmul st, st(1), faddp st(1)
+                                         ; Let's assume the sequence calculates dist_sq = dx*dx + dy*dy + dz*dz
+                                         ; Example correct sequence:
+                                         ; fld st(0) ; dz
+                                         ; fmul st, st ; dz*dz
+                                         ; fld st(1) ; dy
+                                         ; fmul st, st ; dy*dy
+                                         ; fld st(3) ; dx
+                                         ; fmul st, st ; dx*dx
+                                         ; faddp st(1), st ; dx*dx + dy*dy
+                                         ; faddp st(1), st ; (dx*dx+dy*dy) + dz*dz
+    ; The actual assembly calculates (dx*dx + dy*dy) + dz*dz correctly:
+    ; 0x715CB7: fld     st(2)       ; st0=dx, st1=dz, st2=dy, st3=dx
+    ; 0x715CB9: fmulp   st(3), st   ; st0=dz, st1=dy, st2=dx*dx, POP
+    ; 0x715CBB: fmul    st, st      ; st0=dz*dz, st1=dy, st2=dx*dx
+    ; 0x715CBD: faddp   st(2), st   ; st0=dy, st1=dx*dx + dz*dz, POP
+    ; 0x715CBF: fmul    st, st      ; st0=dy*dy, st1=dx*dx + dz*dz
+    ; 0x715CC1: faddp   st(1), st   ; st0=dx*dx + dz*dz + dy*dy, POP
+    0x715CC3: fcomp   dword ptr [esi+0ADAABCh] ; Compare dist_sq with range value (offset +4)
+    0x715CC9: fnstsw  ax                  ; Get FPU status
+    0x715CCB: test    ah, 1               ; Check C3 flag (dist_sq > range_value)
+    0x715CCE: jnz     short loc_715CE6      ; If dist_sq > range_value, return true (still within radius? Seems backward logic, maybe range is max dist?)
+                                         ; Logic seems: Is dist_sq <= range_value? C3=1 means ST(0) > SRC. C3=0 means ST(0) <= SRC. We jump if C3=1 (dist_sq > range). So, if dist_sq <= range, we continue.
+    0x715CD0: ; Point is outside radius
+    0x715CD0: push    139h                ; Push error message index 313 ("Target is too far away.")
+    0x715CD5: call    showGameUiErrorMessage ; Display error message
+    0x715CDA: add     esp, 4                ; Clean up stack
+    0x715CDD: xor     al, al                ; Set return value to 0 (false)
+    0x715CDF: pop     esi
+    0x715CE0: mov     esp, ebp
+    0x715CE2: pop     ebp
+    0x715CE3: retn    8                     ; Return 0
+    0x715CE6: loc_715CE6:                   ; Point is within radius OR check not needed
+    0x715CE6: mov     al, 1                 ; Set return value to 1 (true)
+    0x715CE8: pop     esi
+    0x715CE9: mov     esp, ebp
+    0x715CEB: pop     ebp
+    0x715CEC: retn    8                     ; Return 1
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Parameters corrected based on disassembly:
+    // ecx = PlayerObject* player_obj
+    // stack: arg_0 = int interaction_type_index
+    // stack: arg_4 = float* target_point // Pointer to {x, y, z}
+    char IsPointWithinActionRadius(int interaction_type_index, PlayerObject *player_obj, float *target_point)
+    {
+      // Lookup data based on interaction type index from global arrays.
+      // byte_ADAAB8 seems to be a flag array (1 byte per type).
+      // algn_ADAAB9 seems to be a float array holding the maximum squared distance (4 bytes per type).
+      char* check_flag_ptr = &byte_ADAAB8[12 * interaction_type_index];
+      float* range_sq_ptr = (float*)&algn_ADAAB9[12 * interaction_type_index + 3]; // CHECK OFFSET: +3 seems odd for float. Pseudocode uses +3, disasm uses base+4 effectively.
+
+      // If the flag indicates no check needed, or the range is zero/negative, return true.
+      if ( *check_flag_ptr == 0 || *range_sq_ptr <= 0.0f )
+      {
+        return 1; // True (within radius)
+      }
+
+      // Get the player's current position.
+      float player_pos[3];
+      // Assumes GetPosition is at vtable index 11 (0x2C / 4 = 11).
+      (*(void (__thiscall **)(PlayerObject*, float*))(*player_obj->vtable + 0x2C))(player_obj, player_pos);
+
+      // Calculate the squared distance between the player and the target point.
+      float dx = target_point[0] - player_pos[0];
+      float dy = target_point[1] - player_pos[1];
+      float dz = target_point[2] - player_pos[2];
+      float distance_squared = dx*dx + dy*dy + dz*dz;
+
+      // Compare the squared distance with the maximum allowed squared range.
+      if ( distance_squared <= *range_sq_ptr ) // Note: FPU compare logic was checked carefully
+      {
+        return 1; // True (within radius)
+      }
+      else
+      {
+        // Point is outside the allowed radius. Show an error message.
+        showGameUiErrorMessage(313); // Error code for "Target is too far away."
+        return 0; // False (outside radius)
+      }
+    }
+
+    // Global variables accessed
+    extern char byte_ADAAB8[];   // Array of flags indexed by interaction type * 12
+    extern float algn_ADAAB9[]; // Array of squared range values indexed by interaction type * 12 + offset
+    ```
+*   **Functionality:** This function checks if a given 3D `target_point` is within the allowed action radius for a specific `interaction_type_index` relative to the `player_obj`. It looks up a flag and a maximum squared range from global arrays based on the interaction type. If the flag is off or the range is non-positive, it returns true immediately. Otherwise, it gets the player's position, calculates the squared distance to the target point, and compares it against the maximum squared range. If the point is within range, it returns true; otherwise, it displays a "Target is too far away" UI error and returns false.
+*   **Parameters:**
+    *   `ecx` (player\_obj): Pointer to the player object.
+    *   `a1` (interaction\_type\_index): An integer index representing the type of interaction (e.g., loot, talk, attack). Used to index into global arrays `byte_ADAAB8` and `algn_ADAAB9`.
+    *   `a3` (target\_point): Pointer to a float array `{x, y, z}` representing the target location.
+*   **Return Value:**
+    *   `char` (al): 1 (true) if the point is within the allowed radius or the check is skipped, 0 (false) if it's outside the radius.
+*   **Global Variables/Data:**
+    *   `byte_ADAAB8`: An array of bytes, indexed by `interaction_type_index * 12`. Contains flags indicating if a range check is needed for that interaction type.
+    *   `algn_ADAAB9`: An array likely containing floats, indexed by `interaction_type_index * 12 + offset`. Contains the maximum squared distance allowed for the interaction type.
+*   **Movement/LoS/Collision Relevance:** Related to **LoS/Interaction Range**. This function is a prerequisite check often performed before initiating movement towards a target or performing an interaction, ensuring the target is reachable.
+
+***
+
+**12. calculateInteractionRange (0x71B3B0)**
+
+*   **Disassembly:** (Partial, focusing on structure and representative cases)
+    ```assembly
+    0x71B3B0: push    ebp
+    0x71B3B1: mov     ebp, esp
+    0x71B3B3: lea     ecx, [edx+edx*2]  ; Calculate index * 3 (edx = interaction type index 'a2')
+    0x71B3B6: add     ecx, ecx          ; index * 6
+    0x71B3B8: add     ecx, ecx          ; index * 12
+    0x71B3BA: sub     esp, 8            ; Allocate local space
+    0x71B3BD: cmp     byte_ADAAB8[ecx], 0 ; Check flag in byte_ADAAB8 array
+    0x71B3C4: jz      loc_71B54A        ; If flag is 0, return true (no range needed?)
+    0x71B3CA: cmp     byte_ADAAC1[ecx], 0 ; Check another flag in byte_ADAAC1 array
+    0x71B3D1: jnz     loc_71B54A        ; If flag is non-zero, return true (no range needed?)
+    0x71B3D7: lea     ecx, [edx-3]      ; Adjust index for switch statement (index = a2 - 3)
+    0x71B3DA: cmp     ecx, 8            ; Compare adjusted index with 8 (Number of cases handled in switch?)
+    0x71B3DD: push    esi               ; Save esi (holds target object pointer 'a3')
+    0x71B3DE: ja      def_71B3E4        ; If index > 8, jump to default case
+    0x71B3E4: jmp     ds:jpt_71B3E4[ecx*4] ; Jump table based on adjusted index
+
+    ; Case 5 (Original index a2 = 8) - Not handled by switch, likely default?
+    ; Case 4 (Original index a2 = 7, adjusted index = 4)
+    0x71B43C: jpt_71B3E4 case 4:
+    0x71B43C: fld     flt_ADAAAC        ; Load constant float value (range for type 7)
+    0x71B442: mov     al, 1             ; Set return value to 1 (true)
+    0x71B444: fstp    dword ptr [edi]   ; Store squared range into output float* 'a4'
+    0x71B446: pop     esi
+    0x71B447: mov     esp, ebp
+    0x71B449: pop     ebp
+    0x71B44A: retn
+
+    ; Case 3 (Original index a2 = 6, adjusted index = 3)
+    0x71B44B: jpt_71B3E4 case 3:
+    0x71B44B: fld     flt_ADAAA0        ; Load constant float value (range for type 6)
+    0x71B451: mov     al, 1             ; Set return value to 1 (true)
+    0x71B453: fstp    dword ptr [edi]   ; Store squared range into output float* 'a4'
+    ; ... retn ...
+
+    ; Case 6 (Original index a2 = 9, adjusted index = 6)
+    0x71B45A: jpt_71B3E4 cases 6,10: ; Also handles case 10 (index 13)
+    0x71B45A: mov     ecx, [eax+4]      ; Load high dword of target GUID 'a1'
+    0x71B45D: mov     edx, [eax]        ; Load low dword of target GUID 'a1'
+    0x71B45F: push    4BDBh             ; Push line number
+    0x71B464: push    offset aUnitCCpp  ; Push file name
+    0x71B469: push    8                 ; Push flags (OBJECT_FLAG_UNIT)
+    0x71B46B: push    ecx               ; Push high GUID
+    0x71B46C: push    edx               ; Push low GUID
+    0x71B46D: call    findObjectByGuidAndFlags ; Find the target unit object
+    0x71B472: add     esp, 14h          ; Clean up stack
+    0x71B475: test    eax, eax          ; Check if object found
+    0x71B477: jz      short loc_71B49B  ; If not found, use default range
+    0x71B479: ; Object found
+    0x71B479: add     eax, 0D0h         ; Get target unit's WoWUnit component (offset +0xD0)
+    0x71B47E: push    eax               ; Push target WoWUnit*
+    0x71B47F: lea     ecx, [ebx+0D0h]   ; Load address of player's WoWUnit component (ebx=player obj, +0xD0)
+    0x71B485: call    clamp_combined_velocity ; Calculate combined radius/size (renamed) -> actually GetCombatReach()
+    0x71B48A: fsub    ds:flt_9F987C     ; Subtract a constant (1.3333) - melee leeway?
+    0x71B490: mov     al, 1             ; Set return value true
+    0x71B492: pop     esi
+    0x71B493: fmul    st, st            ; Square the result (range * range)
+    0x71B495: fstp    dword ptr [edi]   ; Store squared range into output float* 'a4'
+    ; ... retn ...
+    0x71B49B: ; Object not found
+    0x71B49B: fld     ds:flt_9EBF34     ; Load default range (5.0)
+    0x71B4A1: mov     al, 1             ; Set return value true
+    0x71B4A3: fmul    st, st            ; Square it (25.0)
+    0x71B4A5: pop     esi
+    0x71B4A6: fstp    dword ptr [edi]   ; Store squared range
+    ; ... retn ...
+
+    ; Case 9 (Original index a2 = 12, adjusted index = 9) - Interact with Game Object?
+    0x71B4EE: jpt_71B3E4 case 9:
+    0x71B4EE: mov     ecx, [eax+4]      ; Load high dword of target GUID 'a1'
+    0x71B4F1: mov     edx, [eax]        ; Load low dword of target GUID 'a1'
+    0x71B4F3: push    4BF7h             ; Line num
+    0x71B4F8: push    offset aUnitCCpp  ; File
+    0x71B4FD: push    1                 ; Flags (OBJECT_FLAG_GAMEOBJECT?)
+    0x71B4FF: push    ecx               ; High GUID
+    0x71B500: push    edx               ; Low GUID
+    0x71B501: call    findObjectByGuidAndFlags ; Find the game object
+    0x71B506: mov     esi, eax
+    0x71B508: add     esp, 14h
+    0x71B50B: test    esi, esi          ; Check if found
+    0x71B50D: jz      short def_71B3E4  ; If not, use default (return false)
+    0x71B50F: push    esi               ; Push GameObject*
+    0x71B510: call    getUnitSkinMaterialId ; Renamed -> getGameObjectInteractionDistance() or similar?
+    0x71B515: add     esp, 4
+    0x71B518: test    eax, eax          ; Check result (maybe returns 0 if not interactable?)
+    0x71B51A: jz      short def_71B3E4  ; If 0, use default (return false)
+    ; --- This part seems incorrect, fetchAndCalculateSpellRange is unlikely for GO interaction ---
+    ; --- Let's assume the call at 71B510 returns the interaction distance directly ---
+    ; --- Simplified interpretation: ---
+    ;    fld [eax] ; Load interaction distance returned by the call at 71B510? (If it returned float)
+    ;    fadd ds:flt_constant ; Add some base radius?
+    ;    fmul st, st ; Square it
+    ;    fstp [edi] ; Store result
+    ;    mov al, 1
+    ;    retn
+    ; --- Back to actual disassembly path using fetchAndCalculateSpellRange ---
+    0x71B51C: push    esi               ; Push GameObject* 'a3' again (misused as float?)
+    0x71B51D: lea     ecx, [ebp+var_4]  ; Output float ptr 1
+    0x71B520: push    ecx
+    0x71B521: lea     edx, [ebp+var_8]  ; Output float ptr 2
+    0x71B524: push    edx
+    0x71B525: push    eax               ; Push result from getUnitSkinMaterialId (int)
+    0x71B526: push    ebx               ; Push PlayerObject* 'a3'
+    0x71B527: call    fetchAndCalculateSpellRange ; Calculate range (likely spell range logic, seems odd here)
+    0x71B52C: fld     [ebp+var_4]       ; Load one of the results
+    0x71B52F: fmul    ds:flt_A02A34     ; Multiply by constant (0.9?)
+    0x71B535: add     esp, 14h
+    0x71B538: mov     al, 1             ; Set return true
+    0x71B53A: pop     esi
+    0x71B53B: fmul    st, st            ; Square the result
+    0x71B53D: fstp    dword ptr [edi]   ; Store squared range
+    ; ... retn ...
+
+    0x71B543: def_71B3E4:               ; Default case / failure
+    0x71B543: xor     al, al            ; Set return value to 0 (false)
+    0x71B545: pop     esi
+    ; ... retn ...
+
+    0x71B54A: loc_71B54A:               ; Check skipped
+    0x71B54A: mov     al, 1             ; Set return value to 1 (true)
+    ; ... retn ...
+    ```
+*   **Pseudocode (Hex-Rays):** (Simplified interpretation based on likely intent)
+    ```c++
+    // Parameters corrected based on disassembly:
+    // eax = uint64_t* target_guid_ptr // GUID passed by pointer
+    // edx = int interaction_type_index
+    // ebx = PlayerObject* player_obj // Source object
+    // edi = float* out_range_squared // Output parameter
+    // esi = TargetObject* target_obj // Target object (Seems inconsistent, ebx/esi usage varies)
+    // Let's assume parameters from calling function handlePlayerClickToMove:
+    // a1 = target_guid_ptr (__int64*)
+    // a2 = interaction_type_index (int)
+    // a3 = player_obj (_DWORD*) -> ebx
+    // a4 = out_range_squared (float*) -> edi
+    // a5 = (unused/optimized out?) -> esi initially points somewhere else?
+    char calculateInteractionRange(uint64_t *target_guid_ptr, int interaction_type_index, PlayerObject *player_obj, float *out_range_squared)
+    {
+      // Check global flags for this interaction type. If set, skip calculation.
+      if ( byte_ADAAB8[12 * interaction_type_index] == 0 || byte_ADAAC1[12 * interaction_type_index] != 0 ) {
+        // Caller might still need a default value in *out_range_squared, but function returns true.
+        // Setting a default like 0.0f might be appropriate here if needed by caller.
+        // *out_range_squared = 0.0f;
+        return 1; // Indicate success or N/A
+      }
+
+      float interaction_distance = 0.0f;
+      bool found_range = false;
+
+      switch ( interaction_type_index )
+      {
+        case 3: // Example: Type 3 uses constant range
+          interaction_distance = flt_ADAAA0; // Load constant
+          found_range = true;
+          break;
+        case 4: // Example: Type 4 uses constant range
+          interaction_distance = flt_ADAAAC; // Load constant
+          found_range = true;
+          break;
+        case 5: // Example: Type 5 (Target Unit - Ranged Attack/Follow?)
+          WoWUnit* target_unit = (WoWUnit*)findObjectByGuidAndFlags(*target_guid_ptr, OBJECT_FLAG_UNIT);
+          if (target_unit) {
+            // Get target's model size or interaction radius
+            float target_radius = target_unit->GetBoundingRadius(); // Made up function call
+            // Some formula based on radius
+            interaction_distance = target_radius * 0.5f + 2.0f; // Formula from disassembly
+            found_range = true;
+          } else {
+             // Default if target not found
+             interaction_distance = sqrt(flt_CA1270); // Default distance (sqrt of squared value)
+             found_range = true; // Still provide a default range
+          }
+          break;
+        case 6: // Example: Type 6 (Melee Attack?)
+        case 10: // Example: Type 10 (Melee Attack?)
+          WoWUnit* target_unit_melee = (WoWUnit*)findObjectByGuidAndFlags(*target_guid_ptr, OBJECT_FLAG_UNIT);
+          if (target_unit_melee) {
+            // Calculate combined combat reach of player and target.
+            interaction_distance = player_obj->GetWoWUnitComponent()->GetCombatReach(target_unit_melee->GetWoWUnitComponent());
+            interaction_distance -= 1.3333334f; // Subtract leeway
+            if (interaction_distance < 0.0f) interaction_distance = 0.0f; // Clamp minimum
+            found_range = true;
+          } else {
+             interaction_distance = 5.0f; // Default melee range if target not found
+             found_range = true;
+          }
+          break;
+        case 7: // Example: Type 7 uses constant range
+          interaction_distance = flt_CA11E8; // Load constant
+          found_range = true;
+          break;
+        case 9: // Example: Type 9 (Interact with GameObject?)
+          WoWGameObject* target_go = (WoWGameObject*)findObjectByGuidAndFlags(*target_guid_ptr, OBJECT_FLAG_GAMEOBJECT);
+          if (target_go) {
+             // Get the interaction distance for this specific game object.
+             interaction_distance = target_go->GetInteractionDistance(); // Made up function call
+             if (interaction_distance > 0.0f) { // Check if interactable
+                 // Apply some scaling factor?
+                 interaction_distance *= 0.9f; // Scaling from disassembly (flt_A02A34)
+                 found_range = true;
+             }
+             // If GetInteractionDistance returned <= 0, found_range remains false.
+          }
+          // If GO not found or not interactable, found_range is false.
+          break;
+        case 11: // Example: Type 11 (Spell Cast?)
+          WoWUnit* target_unit_spell = (WoWUnit*)findObjectByGuidAndFlags(*target_guid_ptr, OBJECT_FLAG_UNIT);
+          if (target_unit_spell) {
+             // fetchAndCalculateSpellRange likely calculates min/max range. We need max range.
+             float min_range, max_range;
+             // dword_BE5D84 might be a specific spell ID or category.
+             fetchAndCalculateSpellRange(player_obj, dword_BE5D84, &min_range, &max_range, target_unit_spell);
+             interaction_distance = max_range * 0.9f; // Apply scaling
+             found_range = true;
+          }
+          // If target not found, found_range is false.
+          break;
+
+        // ... other cases ...
+
+        default:
+          found_range = false; // Unknown interaction type
+          break;
+      }
+
+      if (found_range) {
+        *out_range_squared = interaction_distance * interaction_distance; // Store the squared range
+        return 1; // Success
+      } else {
+        *out_range_squared = 0.0f; // Ensure output is zero on failure
+        return 0; // Failure
+      }
+    }
+
+    // Global variables accessed
+    extern char byte_ADAAB8[];   // Flags array
+    extern char byte_ADAAC1[];   // Flags array
+    extern float flt_ADAAA0, flt_ADAAAC, flt_CA1270, flt_9EBF34, flt_CA11E8, flt_A02A34; // Constant range values
+    extern float flt_9F987C; // Constant offset (1.333...)
+    extern int dword_BE5D84; // Spell ID / Category?
+    ```
+*   **Functionality:** This function calculates the appropriate *squared* interaction range for a given interaction type between a player (`player_obj`) and a target (`target_guid_ptr`). It uses a switch statement based on the `interaction_type_index`.
+    *   For some types, it returns a hardcoded constant range.
+    *   For others (like melee attacks, type 6/10), it finds the target unit, calculates the combined combat reach using `clamp_combined_velocity` (likely `GetCombatReach`), subtracts a leeway, and squares the result.
+    *   For interacting with game objects (type 9), it finds the object, gets its specific interaction distance (potentially via `getUnitSkinMaterialId`, which seems misnamed, or the confusing `fetchAndCalculateSpellRange` path), applies scaling, and squares it.
+    *   For spell casting (type 11), it finds the target, uses `fetchAndCalculateSpellRange` to get the spell's range, scales it, and squares it.
+    *   If checks fail (object not found, invalid type), it returns 0 (false). If successful, it stores the calculated squared range in `out_range_squared` and returns 1 (true). It also performs initial checks using global flag arrays (`byte_ADAAB8`, `byte_ADAAC1`) to potentially skip calculation entirely.
+*   **Parameters:**
+    *   `a1` (target\_guid\_ptr): Pointer to the 64-bit GUID of the target object/unit.
+    *   `a2` (interaction\_type\_index): Integer specifying the type of interaction.
+    *   `a3` (player\_obj): Pointer to the player object initiating the interaction.
+    *   `a4` (out\_range\_squared): Pointer to a float where the calculated squared interaction range will be stored.
+    *   `a5` (esi): Usage unclear/inconsistent in disassembly, possibly target object pointer in some cases.
+*   **Return Value:**
+    *   `char` (al): 1 (true) if a valid range was calculated and stored, 0 (false) otherwise.
+*   **Global Variables/Data:**
+    *   `byte_ADAAB8`, `byte_ADAAC1`: Global flag arrays indexed by interaction type.
+    *   Various `flt_` constants representing default or base ranges/offsets.
+    *   `dword_BE5D84`: Likely a spell ID or category used for range calculation.
+*   **Movement/LoS/Collision Relevance:** Core **LoS/Interaction Range** calculation. Determines the maximum distance at which different interactions can occur, crucial for validating player actions like attacks, looting, or spell casts before initiating movement or the action itself. Provides the squared range for efficient distance checks.
+
+***
+
+**13. can_player_click_move (0x721F90)**
+
+*   **Disassembly:**
+    ```assembly
+    0x721F90: mov     eax, [ecx+8]      ; Load pointer from PlayerObject+0x8 (GUID struct*)
+    0x721F93: mov     ecx, [eax]        ; Load low dword of player's own GUID
+    0x721F95: cmp     ecx, dword ptr qword_CA1238 ; Compare with global player GUID low dword
+    0x721F9B: jnz     short loc_721FB7  ; If low dword mismatch, return false
+    0x721F9D: mov     edx, [eax+4]      ; Load high dword of player's own GUID
+    0x721FA0: cmp     edx, dword ptr qword_CA1238+4 ; Compare with global player GUID high dword
+    0x721FA6: jnz     short loc_721FB7  ; If high dword mismatch, return false
+    0x721FA8: ; GUID matches player's GUID
+    0x721FA8: cmp     dword_CA11F4, 0Dh ; Compare global interaction state 'dword_CA11F4' with 13
+    0x721FAF: jz      short loc_721FB7  ; If state is 13 (Click-to-move active?), return false
+    0x721FB1: mov     eax, 1            ; State is not 13, set return value to 1 (true)
+    0x721FB6: retn
+    0x721FB7: loc_721FB7:
+    0x721FB7: xor     eax, eax          ; Set return value to 0 (false)
+    0x721FB9: retn
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Parameter ecx = PlayerObject* this_player
+    BOOL can_player_click_move(PlayerObject *this_player)
+    {
+      // Get the GUID of the player object passed as argument.
+      uint64_t player_guid = this_player->guid_struct_ptr_8->guid; // Assuming struct at +8 holds GUID
+
+      // Check if the player object's GUID matches the globally stored player GUID.
+      // And check if the global interaction state is NOT 13 (which likely means Click-to-Move is active).
+      if (player_guid.raw == qword_CA1238.raw && dword_CA11F4 != 13)
+      {
+        return TRUE; // Yes, click-to-move is allowed for this player right now.
+      }
+      else
+      {
+        return FALSE; // No, either not the player or CTM is already active/disallowed.
+      }
+    }
+
+    // Global variables accessed
+    extern uint64_t qword_CA1238; // Player's own GUID
+    extern int dword_CA11F4;     // Current interaction/tracking state
+    ```
+*   **Functionality:** This function checks if the specific player object passed in `ecx` is the main player character AND if the game's current interaction state (`dword_CA11F4`) is not equal to 13. State 13 likely signifies that a click-to-move action is already in progress or being processed. It returns true only if it's the main player and click-to-move isn't already active.
+*   **Parameters:**
+    *   `ecx` (this\_player): Pointer to the player object structure to check.
+*   **Return Value:**
+    *   `BOOL` (eax): `TRUE` (1) if click-to-move is allowed for this player, `FALSE` (0) otherwise.
+*   **Global Variables/Data:**
+    *   `qword_CA1238`: The 64-bit GUID of the player's own character.
+    *   `dword_CA11F4`: A global integer representing the current interaction/tracking state. State 13 seems to inhibit starting a new click-to-move action.
+*   **Movement/LoS/Collision Relevance:** Related to **Movement** control. It acts as a gatekeeper, preventing the initiation of a new click-to-move command if one is already active or if the unit isn't the player character.
+
+***
+
+**14. handlePlayerClickToMove (0x727400)**
+
+*   **Disassembly:** (Partial, focusing on key actions)
+    ```assembly
+    0x727400: push    ebp
+    0x727401: mov     ebp, esp
+    0x727403: sub     esp, 18h          ; Allocate local stack space
+    0x727406: push    ebx
+    0x727407: mov     ebx, ecx          ; Move PlayerObject* 'a1' from ecx to ebx
+    0x727409: mov     eax, [ebx+8]      ; Get player GUID struct ptr
+    0x72740C: mov     ecx, [eax]        ; Get low GUID
+    0x72740E: cmp     ecx, dword ptr qword_CA1238 ; Compare with global player GUID
+    0x727414: push    esi               ; Save esi
+    0x727415: jnz     short loc_727470  ; If not player, skip CTM state setup
+    ; ... (compare high GUID) ...
+    0x727420: jnz     short loc_727470
+    0x727422: mov     eax, dword_CA11F4 ; Get current interaction state
+    0x727427: cmp     eax, 0Dh          ; Compare with 13 (CTM active?)
+    0x72742A: jz      short loc_727470  ; If already CTM, skip setup
+    0x72742C: xor     esi, esi          ; Zero esi for later use
+    0x72742E: cmp     eax, 4            ; Compare state with 4 (Terrain click?)
+    0x727431: jnz     short loc_727441
+    0x727433: push    esi               ; Arg 1 (0)
+    0x727434: push    166h              ; Arg 0 (358, Event ID: TERRAIN_CLICK?)
+    0x727439: call    forwardFrameScriptEvent ; Send event to UI/Lua
+    0x72743E: retn    0                 ; Return immediately (handled by script?)
+    0x727441: loc_727441:               ; Not state 4, proceed to set CTM state
+    0x727441: call    get_system_time_milliseconds
+    0x727446: fldz
+    0x727448: fstp    flt_CA11D0        ; Reset global CTM timer/progress?
+    0x72744E: mov     dword ptr qword_CA11F8, esi ; Clear global CTM target GUID low (esi=0)
+    0x727454: mov     dword ptr qword_CA11F8+4, esi ; Clear global CTM target GUID high
+    0x72745A: mov     dword_CA1200, esi ; Clear global CTM flags?
+    0x727460: mov     dword_CA11D4, esi ; Clear global CTM pathfinding related var?
+    0x727466: mov     dword_CA11F4, 0Dh ; Set global state to 13 (CTM Active)
+    0x727470: loc_727470:               ; Continue CTM processing
+    0x727470: mov     esi, [ebp+arg_8]  ; Load target point float* 'a4' into esi
+    0x727473: mov     eax, [ebp+arg_0]  ; Load interaction type 'a1' into eax
+    0x727476: push    esi               ; Push target point 'a4'
+    0x727477: push    eax               ; Push interaction type 'a1'
+    0x727478: mov     ecx, ebx          ; Move PlayerObject* 'a1' to ecx
+    0x72747A: call    IsPointWithinActionRadius ; Check basic distance
+    0x72747F: test    al, al
+    0x727481: jz      loc_7275AA        ; If too far, return false
+    0x727487: mov     eax, [ebp+arg_4]  ; Load target GUID ptr 'a2' into eax
+    0x72748A: mov     edx, [ebp+arg_0]  ; Load interaction type 'a1' into edx
+    0x72748D: push    edi
+    0x72748E: mov     edi, offset flt_CA11E0 ; Get address for output range^2
+    0x727493: call    calculateInteractionRange ; Calculate specific interaction range^2
+    0x727498: test    al, al
+    0x72749A: pop     edi
+    0x72749B: jz      loc_7275AA        ; If range calculation failed, return false
+    0x7274A1: mov     ecx, [ebp+arg_0]  ; Load interaction type 'a1'
+    0x7274A4: mov     dword_CA11F4, ecx ; Set global interaction state to the current type
+    0x7274AA: call    get_system_time_milliseconds
+    0x7274AF: mov     edx, [ebx]        ; Get vtable ptr from PlayerObject*
+    0x7274B1: mov     edx, [edx+2Ch]    ; Get GetPosition virt func ptr
+    0x7274B4: mov     dword_CA11F0, eax ; Store current time in global CTM timestamp
+    0x7274B9: lea     eax, [ebp+var_C]  ; Local buffer for player position
+    0x7274BC: push    eax               ; Push position buffer ptr
+    0x7274BD: mov     ecx, ebx          ; Move PlayerObject* to ecx
+    0x7274BF: call    edx               ; Call GetPosition
+    0x7274C1: push    eax               ; Result pointer from GetPosition (points to [ebp+var_C])
+    0x7274C2: lea     eax, [ebp+var_18] ; Local buffer for transformed coords?
+    0x7274C5: push    eax               ; Push output buffer ptr
+    0x7274C6: lea     ecx, [ebx+788h]   ; Get pointer within PlayerObject+0x788 (Transform/Matrix?)
+    0x7274CC: call    convertMovementToWorldCoordinates ; Convert? Or maybe just copy position?
+    0x7274D1: fld     [ebp+arg_C]       ; Load facing 'a4'
+    0x7274D4: mov     ecx, [eax]        ; Load X coord from result of convert...
+    0x7274D6: fstp    flt_CA11EC        ; Store facing in global CTM facing var
+    0x7274DC: mov     dword_CA1258, ecx ; Store player X in global CTM start pos X
+    0x7274E2: mov     edx, [eax+4]      ; Load Y coord
+    0x7274E5: mov     dword_CA125C, edx ; Store player Y in global CTM start pos Y
+    0x7274EB: mov     eax, [eax+8]      ; Load Z coord
+    0x7274EE: mov     dword_CA1260, eax ; Store player Z in global CTM start pos Z
+    0x7274F3: mov     eax, [ebp+arg_4]  ; Load target GUID ptr 'a2'
+    0x7274F6: mov     ecx, [eax]        ; Load target GUID low
+    0x7274F8: mov     edx, [eax+4]      ; Load target GUID high
+    0x7274FB: mov     eax, [esi]        ; Load target pos X (from arg_8/esi)
+    0x7274FD: mov     flt_CA1264, eax   ; Store target X in global CTM target pos X
+    0x727502: mov     dword ptr qword_CA11F8, ecx ; Store target GUID low in global CTM target GUID
+    0x727508: mov     ecx, [esi+4]      ; Load target pos Y
+    0x72750B: mov     dword_CA1268, ecx ; Store target Y in global CTM target pos Y
+    0x727511: mov     dword ptr qword_CA11F8+4, edx ; Store target GUID high in global CTM target GUID
+    0x727517: mov     edx, [esi+8]      ; Load target pos Z
+    0x72751A: mov     dword_CA126C, edx ; Store target Z in global CTM target pos Z
+    0x727520: mov     eax, [ebx+0D8h]   ; Load WoWUnit component ptr from PlayerObject+0xD8
+    0x727526: test    byte ptr [eax+48h], 8 ; Check flags (IsSwimming?) in WoWUnit+0x48
+    0x72752A: jz      short loc_727534
+    0x72752C: fld     dword ptr [eax+0ACh] ; Load swimming pitch limit? from WoWUnit+0xAC
+    0x727532: jmp     short loc_72753A
+    0x727534: loc_727534:
+    0x727534: fld     ds:flt_9E8D34     ; Load default pitch limit (PI)
+    0x72753A: loc_72753A:
+    0x72753A: fstp    flt_CA11DC        ; Store pitch limit in global CTM var
+    0x727540: mov     dword_CA11D4, 0   ; Reset global CTM pathfinding var?
+    0x72754A: fld     flt_CA11E0        ; Load calculated squared range
+    0x727550: fsqrt                     ; Calculate actual range
+    0x727552: fstp    flt_CA11E4        ; Store actual range in global CTM range var
+    0x727558: fldz
+    0x72755A: fst     flt_CA11D0        ; Reset global CTM timer/progress?
+    0x727560: fcomp   flt_CA11A4        ; Compare 0.0 with global CTM speed var?
+    0x727566: fnstsw  ax
+    0x727568: test    ah, 44h           ; Check if 0.0 <= speed
+    0x72756B: jp      short loc_727579  ; If speed > 0, skip setting default speed
+    0x72756D: fld     dword ptr [ebx+81Ch] ; Load player's current speed from PlayerObject+0x81C
+    0x727573: fstp    flt_CA11A4        ; Store player speed as CTM speed
+    0x727579: loc_727579:
+    0x727579: mov     eax, [ebx]        ; Get vtable ptr
+    0x72757B: mov     edx, [eax+138h]   ; Get GetMovementState virt func ptr (offset +0x138)
+    0x727581: mov     ecx, ebx          ; Move PlayerObject* to ecx
+    0x727583: call    edx               ; Call GetMovementState
+    0x727585: test    eax, eax          ; Check result (0 = Standing?)
+    0x727587: jz      short loc_7275A0
+    0x727589: mov     eax, [ebx+8]      ; Get GUID struct ptr
+    0x72758C: mov     ecx, [eax+8]      ; Get flags from GUID struct+0x8 (Unit fields?)
+    0x72758F: shr     ecx, 4            ; Shift flags
+    0x727592: test    cl, 1             ; Check specific flag bit (Is Sitting?)
+    0x727595: jz      short loc_7275A0
+    0x727597: ; Player is sitting, need to stand up
+    0x727597: push    0                 ; Push 0 (flags?)
+    0x727599: mov     ecx, ebx          ; Move PlayerObject* to ecx
+    0x72759B: call    sendPlayerStandStateUpdate ; Send stand up packet/event
+    0x7275A0: loc_7275A0:
+    0x7275A0: pop     esi               ; Restore esi
+    0x7275A1: mov     al, 1             ; Set return value true
+    0x7275A3: pop     ebx
+    0x7275A4: mov     esp, ebp
+    0x7275A6: pop     ebp
+    0x7275A7: retn    10h               ; Return 1, cleaning 0x10 bytes args
+    0x7275AA: loc_7275AA:               ; Failure path
+    0x7275AA: pop     esi               ; Restore esi
+    0x7275AB: xor     al, al            ; Set return value false
+    0x7275AD: pop     ebx
+    0x7275AE: mov     esp, ebp
+    0x7275B0: pop     ebp
+    0x7275B1: retn    10h               ; Return 0, cleaning 0x10 bytes args
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Parameters corrected based on disassembly:
+    // ecx = PlayerObject* player_obj
+    // stack: arg_0 = int interaction_type
+    // stack: arg_4 = uint64_t* target_guid_ptr
+    // stack: arg_8 = float* target_pos_ptr // {x,y,z}
+    // stack: arg_C = float target_facing // Passed on FPU stack initially? No, arg_C is float value.
+    char handlePlayerClickToMove(PlayerObject *player_obj, int interaction_type, uint64_t *target_guid_ptr, float *target_pos_ptr, float target_facing)
+    {
+      // Check if this is the main player and if CTM isn't already active.
+      // If not player or CTM active, potentially skip setup.
+      if ( player_obj->guid_struct_ptr_8->guid.raw == qword_CA1238.raw && dword_CA11F4 != 13 ) {
+        // If interaction type is 4 (Terrain Click?), send a UI event and potentially return early.
+        if ( dword_CA11F4 == 4 ) { // Check previous state before overwrite
+           forwardFrameScriptEvent(358, 0); // TERRAIN_CLICK event?
+           // Original code returns here, maybe script handles it? Seems odd. Let's assume it continues.
+        }
+        // Initialize global Click-to-Move (CTM) state variables.
+        get_system_time_milliseconds(); // Called but result not used here
+        flt_CA11D0 = 0.0f;           // CTM Progress/Timer
+        qword_CA11F8 = 0ULL;         // CTM Target GUID
+        dword_CA1200 = 0;            // CTM Flags
+        dword_CA11D4 = 0;            // CTM Pathing State?
+        dword_CA11F4 = 13;           // Set CTM Active state
+      }
+
+      // Perform initial distance check.
+      if (!IsPointWithinActionRadius(interaction_type, player_obj, target_pos_ptr)) {
+        return 0; // Target is too far away based on generic check
+      }
+
+      // Calculate the specific interaction range for this type.
+      if (!calculateInteractionRange(target_guid_ptr, interaction_type, player_obj, &flt_CA11E0)) {
+        return 0; // Failed to get interaction range for this type
+      }
+
+      // Update global interaction state and timestamp.
+      dword_CA11F4 = interaction_type; // Set state to the specific type being handled
+      dword_CA11F0 = get_system_time_milliseconds(); // Store CTM start time
+
+      // Get player's current position.
+      float player_pos[3];
+      player_obj->GetPosition(player_pos); // Virtual call
+
+      // Store player's start position.
+      // convertMovementToWorldCoordinates might just be copying the position here.
+      float start_pos[3];
+      convertMovementToWorldCoordinates(&start_pos, player_pos, player_obj->transform_matrix_788); // Or similar
+      dword_CA1258 = start_pos[0]; // CTM Start X
+      dword_CA125C = start_pos[1]; // CTM Start Y
+      dword_CA1260 = start_pos[2]; // CTM Start Z
+
+      // Store target details in global CTM variables.
+      flt_CA11EC = target_facing;          // CTM Target Facing
+      qword_CA11F8 = *target_guid_ptr;     // CTM Target GUID
+      flt_CA1264 = target_pos_ptr[0];    // CTM Target X
+      dword_CA1268 = target_pos_ptr[1];    // CTM Target Y (HexRays missed float conversion)
+      dword_CA126C = target_pos_ptr[2];    // CTM Target Z (HexRays missed float conversion)
+
+      // Determine pitch limit based on swimming state.
+      WoWUnit* unit_comp = player_obj->GetWoWUnitComponent(); // Offset +0xD8
+      if (unit_comp->IsSwimming()) { // Check flag 8 at offset +0x48
+        flt_CA11DC = unit_comp->swim_pitch_limit_AC; // Offset +0xAC
+      } else {
+        flt_CA11DC = 3.1415927f; // Default limit (PI)
+      }
+
+      // Finalize CTM setup.
+      dword_CA11D4 = 0;                  // Reset pathing state?
+      flt_CA11E4 = sqrt(flt_CA11E0);     // CTM Interaction Range (sqrt of calculated range^2)
+      flt_CA11D0 = 0.0f;                 // Reset CTM progress/timer
+
+      // Set CTM speed if not already set (or zero).
+      if (flt_CA11A4 <= 0.0f) {
+        flt_CA11A4 = player_obj->current_speed_81C; // Use player's current speed
+      }
+
+      // Check if the player is sitting and needs to stand up.
+      if (player_obj->GetMovementState() != MOVEMENT_STATE_STANDING) { // Virtual call, state != 0
+         if (player_obj->IsSitting()) { // Check flag at guid_struct+8, bit 4
+            sendPlayerStandStateUpdate(player_obj, 0); // Send stand packet
+         }
+      }
+
+      return 1; // Success
+    }
+
+    // Global variables accessed (CTM State)
+    extern int dword_CA11F4;         // Interaction state (13 = CTM active)
+    extern uint64_t qword_CA11F8;    // CTM Target GUID
+    extern float flt_CA11E0;         // CTM Squared Interaction Range
+    extern float flt_CA11E4;         // CTM Interaction Range
+    extern float flt_CA11EC;         // CTM Target Facing
+    extern int dword_CA11F0;         // CTM Start Timestamp
+    extern float flt_CA11D0;         // CTM Progress/Timer?
+    extern int dword_CA1200;         // CTM Flags?
+    extern int dword_CA11D4;         // CTM Pathing State?
+    extern float dword_CA1258;       // CTM Start Pos X (HexRays missed type)
+    extern float dword_CA125C;       // CTM Start Pos Y (HexRays missed type)
+    extern float dword_CA1260;       // CTM Start Pos Z (HexRays missed type)
+    extern float flt_CA1264;         // CTM Target Pos X
+    extern float dword_CA1268;       // CTM Target Pos Y (HexRays missed type)
+    extern float dword_CA126C;       // CTM Target Pos Z (HexRays missed type)
+    extern float flt_CA11DC;         // CTM Pitch Limit
+    extern float flt_CA11A4;         // CTM Speed
+    extern uint64_t qword_CA1238;    // Player GUID
+    ```
+*   **Functionality:** This is the core function for initiating a click-to-move (CTM) action.
+    1.  It checks if the object is the player and if CTM isn't already active (state 13). If not, it initializes global CTM state variables and sets the state to 13.
+    2.  It performs a basic distance check (`IsPointWithinActionRadius`).
+    3.  It calculates the specific interaction range for the given type (`calculateInteractionRange`).
+    4.  If both checks pass, it updates the global interaction state (`dword_CA11F4`) to the specific type being handled.
+    5.  It records the CTM start time (`dword_CA11F0`).
+    6.  It gets the player's current position and stores it as the CTM start position (`dword_CA1258` etc.).
+    7.  It stores the target GUID (`qword_CA11F8`), target position (`flt_CA1264` etc.), and target facing (`flt_CA11EC`) in global CTM variables.
+    8.  It determines and stores a pitch limit (`flt_CA11DC`) based on whether the player is swimming.
+    9.  It stores the calculated interaction range (`flt_CA11E4`).
+    10. It resets a CTM timer/progress variable (`flt_CA11D0`).
+    11. It sets a default CTM speed (`flt_CA11A4`) if needed, based on the player's current speed.
+    12. It checks if the player is sitting and sends a "stand up" command if necessary.
+    13. Returns true on success, false on failure (e.g., out of range).
+*   **Parameters:**
+    *   `ecx` (player\_obj): Pointer to the player object.
+    *   `a1` (interaction\_type): Integer code for the type of click interaction.
+    *   `a2` (target\_guid\_ptr): Pointer to the 64-bit GUID of the target (can be 0 for terrain clicks).
+    *   `a3` (target\_pos\_ptr): Pointer to the float `{x,y,z}` coordinates of the click target.
+    *   `a4` (target\_facing): Float value for the desired facing at the destination (often 0 for terrain clicks).
+*   **Return Value:**
+    *   `char` (al): 1 (true) if the CTM sequence was successfully initiated, 0 (false) otherwise.
+*   **Global Variables/Data:** Accesses and modifies numerous global variables prefixed `dword_CA...` or `flt_CA...` which collectively represent the state of the currently active Click-to-Move operation (target GUID, target position, start position, start time, interaction range, current speed, progress, etc.).
+*   **Movement/LoS/Collision Relevance:** Core **Movement** initiation function for click-to-move. It performs **LoS/Interaction Range** checks (`IsPointWithinActionRadius`, `calculateInteractionRange`) and sets up all the necessary state for the movement controller to take over and move the player towards the target.
+
+***
+
+**15. handleCgUnitTrackingState (0x72B3A0)**
+
+*   **Disassembly:**
+    ```assembly
+    0x72B3A0: mov     eax, dword_CA11F4 ; Load current interaction state
+    0x72B3A5: add     eax, 0FFFFFFFCh ; Adjust index for switch (state - 4)
+    0x72B3A8: cmp     eax, 7            ; Check if adjusted index is within range [0, 7]
+    0x72B3AB: push    esi               ; Save esi
+    0x72B3AC: mov     esi, ecx          ; Move PlayerObject* 'this' from ecx to esi
+    0x72B3AE: ja      def_72B3B4        ; If > 7, jump to default
+    0x72B3B4: jmp     ds:jpt_72B3B4[eax*4] ; Jump table based on (state - 4)
+
+    ; Case 7 (Original state = 11, adjusted index = 7)
+    0x72B3BB: jpt_72B3B4 case 7:
+    0x72B3BB: mov     ecx, dword ptr qword_CA11F8+4 ; Load CTM target GUID high
+    0x72B3C1: mov     eax, dword ptr qword_CA11F8 ; Load CTM target GUID low
+    0x72B3C6: push    1                 ; Push arg 3 (1)
+    0x72B3C8: mov     dword ptr qword_CA11B8+4, ecx ; Store CTM GUID high into global state var qword_CA11B8
+    0x72B3CE: push    1                 ; Push arg 2 (1)
+    0x72B3D0: mov     ecx, esi          ; Move PlayerObject* 'this' to ecx
+    0x72B3D2: mov     dword ptr qword_CA11B8, eax ; Store CTM GUID low into global state var qword_CA11B8
+    0x72B3D7: call    reset_tracking_and_input ; Reset tracking state, possibly setting the new target
+    0x72B3DC: pop     esi
+    0x72B3DD: retn
+
+    ; Cases 10, 11 (Original state = 14, 15, adjusted = 10, 11 -> Default?) - This case in jump table is state 6/10?
+    ; Case 6 (Original state = 10, adjusted index = 6)
+    ; Case 10 (Original state = 14, adjusted index = 10 -> Default?)
+    0x72B3DE: jpt_72B3B4 cases 10,11: ; Label seems wrong, should be case 6?
+    0x72B3DE: mov     edx, dword ptr qword_CA11F8 ; Load CTM target GUID low
+    0x72B3E4: mov     eax, dword ptr qword_CA11F8+4 ; Load CTM target GUID high
+    0x72B3E9: push    1                 ; Push arg 3 (1)
+    0x72B3EB: push    1                 ; Push arg 2 (1)
+    0x72B3ED: mov     ecx, esi          ; Move PlayerObject* 'this' to ecx
+    0x72B3EF: mov     dword ptr qword_CA11C8, edx ; Store CTM GUID low into global qword_CA11C8
+    0x72B3F5: mov     dword ptr qword_CA11C8+4, eax ; Store CTM GUID high into global qword_CA11C8
+    0x72B3FA: call    reset_tracking_and_input
+    0x72B3FF: pop     esi
+    0x72B400: retn
+
+    ; Case 6 (Original state = 10, adjusted index = 6) - Mapped to previous case? Let's assume this handles state 9.
+    ; Case 9 (Original state = 13 -> CTM Active, adjusted index = 9 -> Default?)
+    ; Jump table seems misaligned with comments/pseudocode. Let's follow the code flow.
+    ; Adjusted Index 0 (State 4): Jump to 72B45F
+    ; Adjusted Index 1 (State 5): Jump to 72B449
+    ; Adjusted Index 2 (State 6): Jump to 72B401
+    ; Adjusted Index 3 (State 7): Jump to 72B3BB
+    ; Adjusted Index 4 (State 8): Jump to Default 72B46C
+    ; Adjusted Index 5 (State 9): Jump to 72B426
+    ; Adjusted Index 6 (State 10): Jump to 72B3DE
+    ; Adjusted Index 7 (State 11): Jump to 72B3DE
+
+    ; State 9 (Adjusted 5):
+    0x72B426: jpt_72B3B4 case 9: ; Label likely state 9
+    0x72B426: mov     ecx, dword ptr qword_CA11F8+4 ; Load CTM GUID high
+    0x72B42C: mov     eax, dword ptr qword_CA11F8 ; Load CTM GUID low
+    0x72B431: push    1
+    0x72B433: mov     dword ptr qword_CA11B0+4, ecx ; Store into global qword_CA11B0
+    0x72B439: push    1
+    0x72B43B: mov     ecx, esi          ; PlayerObject*
+    0x72B43D: mov     dword ptr qword_CA11B0, eax ; Store into global qword_CA11B0
+    0x72B442: call    reset_tracking_and_input
+    0x72B447: pop     esi
+    0x72B448: retn
+
+    ; State 5 (Adjusted 1):
+    0x72B449: jpt_72B3B4 case 5: ; Label likely state 5
+    0x72B449: mov     edx, dword ptr qword_CA11F8 ; Load CTM GUID low
+    0x72B44F: mov     eax, dword ptr qword_CA11F8+4 ; Load CTM GUID high
+    0x72B454: mov     dword ptr qword_CA11A8, edx ; Store into global qword_CA11A8
+    0x72B45A: mov     dword ptr qword_CA11A8+4, eax ; Store into global qword_CA11A8
+    ; Fallthrough to state 4 handler
+
+    ; State 4 (Adjusted 0):
+    0x72B45F: jpt_72B3B4 case 4: ; Label likely state 4
+    0x72B45F: push    1
+    0x72B461: push    1
+    0x72B463: mov     ecx, esi          ; PlayerObject*
+    0x72B465: call    reset_tracking_and_input
+    0x72B46A: pop     esi
+    0x72B46B: retn
+
+    ; Default Case (States < 4, 8, 12, 13, >11?)
+    0x72B46C: def_72B3B4:
+    0x72B46C: call    get_system_time_milliseconds
+    0x72B471: push    eax               ; Push current time
+    0x72B472: mov     ecx, esi          ; PlayerObject*
+    0x72B474: call    handleCgUnitConditionalAttack ; Handle default attack logic
+    0x72B479: pop     esi
+    0x72B47A: retn
+    ```
+*   **Pseudocode (Hex-Rays):** (Corrected based on code flow)
+    ```c++
+    // Parameter ecx = PlayerObject* this_player
+    void __thiscall handleCgUnitTrackingState(PlayerObject *this_player)
+    {
+      // Based on the current interaction state (dword_CA11F4), update the appropriate
+      // target GUID global variable using the GUID stored from the last CTM operation (qword_CA11F8).
+      // Then, reset the tracking state.
+      switch ( dword_CA11F4 ) // Current global interaction state
+      {
+        case 4: // Terrain Interaction?
+          // No specific GUID target for terrain, just reset tracking.
+          qword_CA11A8 = 0LL; // Clear target GUID for state 5? (Falls through)
+          reset_tracking_and_input(this_player, 1, 1);
+          break;
+
+        case 5: // Interact with Unit (Type 5)?
+          qword_CA11A8 = qword_CA11F8; // Set target GUID for state 5
+          reset_tracking_and_input(this_player, 1, 1);
+          break;
+
+        case 6: // Melee Attack (Type 6)?
+          qword_CA11C0 = qword_CA11F8; // Set target GUID for state 6
+          reset_tracking_and_input(this_player, 1, 1);
+          break;
+
+        case 7: // Ranged Attack / Follow (Type 7)?
+          qword_CA11B8 = qword_CA11F8; // Set target GUID for state 7
+          reset_tracking_and_input(this_player, 1, 1);
+          break;
+
+        case 9: // Interact with GameObject (Type 9)?
+          qword_CA11B0 = qword_CA11F8; // Set target GUID for state 9
+          reset_tracking_and_input(this_player, 1, 1);
+          break;
+
+        case 10: // Melee Attack (Type 10)?
+        case 11: // Spell Cast (Type 11)?
+          qword_CA11C8 = qword_CA11F8; // Set target GUID for states 10/11
+          reset_tracking_and_input(this_player, 1, 1);
+          break;
+
+        default: // Includes state 8, 13 (CTM Active), others...
+          // For other states, handle standard conditional attack logic.
+          int current_time = get_system_time_milliseconds();
+          handleCgUnitConditionalAttack(this_player, current_time);
+          break;
+      }
+    }
+
+    // Global variables accessed
+    extern int dword_CA11F4;      // Current interaction state
+    extern uint64_t qword_CA11F8; // Last CTM target GUID
+    extern uint64_t qword_CA11A8; // Target GUID for state 5
+    extern uint64_t qword_CA11B0; // Target GUID for state 9
+    extern uint64_t qword_CA11B8; // Target GUID for state 7
+    extern uint64_t qword_CA11C0; // Target GUID for state 6
+    extern uint64_t qword_CA11C8; // Target GUID for states 10/11
+    ```
+*   **Functionality:** This function synchronizes the game's general target tracking state based on the current interaction mode (`dword_CA11F4`). It reads the GUID stored during the last click-to-move operation (`qword_CA11F8`) and copies it into a specific global variable corresponding to the interaction type (`qword_CA11A8` for type 5, `qword_CA11B0` for type 9, etc.). After potentially setting the target GUID, it calls `reset_tracking_and_input`, which likely stops any current CTM movement and sets the player's actual target to the newly assigned GUID. For default or unhandled states, it calls `handleCgUnitConditionalAttack`.
+*   **Parameters:**
+    *   `ecx` (this\_player): Pointer to the player object structure.
+*   **Return Value:** `void`.
+*   **Global Variables/Data:** Reads `dword_CA11F4` (interaction state) and `qword_CA11F8` (last CTM target). Writes to various `qword_CA11A8/B0/B8/C0/C8` variables, which likely store the active target GUID for different interaction types (following, melee, ranged, spell, gameobject interact).
+*   **Movement/LoS/Collision Relevance:** Related to **Movement** control and **Interaction Target** management. It bridges the gap between initiating a click-to-move action (which sets `dword_CA11F4` and `qword_CA11F8`) and the game's persistent target tracking system (used for auto-attack, facing, etc.). It essentially sets the "official" target based on the click interaction type.
+
+***
+
+**16. handleFaceClickToMove (0x72B660)**
+
+*   **Disassembly:**
+    ```assembly
+    0x72B660: push    ebp
+    0x72B661: mov     ebp, esp
+    0x72B663: mov     eax, [ecx+0D0h]     ; Load WoWUnit ptr from TargetObject+0xD0
+    0x72B669: xor     edx, edx          ; Zero edx
+    0x72B66B: sub     esp, 14h          ; Allocate local space
+    0x72B66E: cmp     [eax+48h], edx    ; Check WoWUnit->field_48 (Mount Display ID?) > 0? Or some other check
+    0x72B671: jle     short loc_72B6BE  ; If <= 0, skip
+    0x72B673: mov     eax, [ecx+8]      ; Load TargetObject->GUID struct ptr
+    0x72B676: push    esi               ; Save esi (used later?)
+    0x72B677: mov     esi, [eax]        ; Load target GUID low
+    0x72B679: cmp     esi, dword ptr qword_CA1238 ; Compare target GUID low with player GUID low
+    0x72B67F: pop     esi               ; Restore esi
+    0x72B680: jnz     short loc_72B6BE  ; If target GUID != player GUID, continue (Don't CTM self)
+    0x72B682: mov     eax, [eax+4]      ; Load target GUID high
+    0x72B685: cmp     eax, dword ptr qword_CA1238+4 ; Compare target GUID high with player GUID high
+    0x72B68B: jnz     short loc_72B6BE  ; If target GUID != player GUID, continue
+    0x72B68D: ; Target GUID == Player GUID, skip CTM on self
+    0x72B68D: mov     eax, dword_BD08F4 ; Load global PlayerObject*
+    0x72B692: cmp     [eax+30h], edx    ; Check PlayerObject->field_30 != 0 (Is player loaded/valid?)
+    0x72B695: jz      short loc_72B6BE  ; If player invalid, skip
+    0x72B697: ; Conditions met: Target is not self, Target has Unit component with field_48 > 0, Player is valid.
+    0x72B697: fldz                     ; Push 0.0
+    0x72B699: push    ecx               ; Push TargetObject* 'this'
+    0x72B69A: fst     [ebp+var_14]      ; Init target pos z = 0.0
+    0x72B69D: mov     dword ptr [ebp+var_8], edx ; Init target GUID low = 0
+    0x72B6A0: fst     [ebp+var_10]      ; Init target pos y = 0.0
+    0x72B6A3: mov     dword ptr [ebp+var_8+4], edx ; Init target GUID high = 0
+    0x72B6A6: fstp    [ebp+var_C]       ; Init target pos x = 0.0 -> Position is not used?
+    0x72B6A9: lea     edx, [ebp+var_14] ; Load address of target_pos_z (effectively pointer to {0,0,0})
+    0x72B6AC: fld     [ebp+this]        ; Load target facing 'a2' from stack arg
+    0x72B6AF: lea     eax, [ebp+var_8]  ; Load address of target_guid (0)
+    0x72B6B2: fstp    [esp+18h+var_18]  ; Store target facing 'a2' as stack arg 4 for handlePlayerClickToMove
+    0x72B6B5: push    edx               ; Push target_pos_ptr (pointing to {0,0,0}) (arg 3)
+    0x72B6B6: push    eax               ; Push target_guid_ptr (pointing to 0) (arg 2)
+    0x72B6B7: push    2                 ; Push interaction type 2 (Face/Unit click?) (arg 1)
+    0x72B6B9: call    handlePlayerClickToMove ; Call core CTM handler
+    0x72B6BE: loc_72B6BE:
+    0x72B6BE: mov     esp, ebp          ; Restore stack
+    0x72B6C0: pop     ebp
+    0x72B6C1: retn    4                 ; Return, cleaning 4 bytes (float a2)
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Parameters corrected based on disassembly:
+    // ecx = TargetObject* target_obj // The object being clicked on
+    // stack: arg_0 = float target_facing // Facing of the target object
+    char handleFaceClickToMove(WoWObject *target_obj, float target_facing)
+    {
+      // Get the WoWUnit component of the target object.
+      WoWUnit* target_unit_comp = target_obj->GetWoWUnitComponent(); // Offset +0xD0
+
+      // Perform checks:
+      // 1. Target must have a unit component with field_48 > 0 (Mounted display ID? Or valid unit state?)
+      // 2. Target object's GUID must not be the player's own GUID.
+      // 3. The global player object pointer must be valid (field_30 != 0).
+      if (target_unit_comp != nullptr && target_unit_comp->field_48 > 0 &&
+          target_obj->guid_struct_ptr_8->guid.raw != qword_CA1238.raw &&
+          g_playerObject != nullptr && g_playerObject->field_30 != 0) // Assuming dword_BD08F4 is g_playerObject
+      {
+          // Prepare dummy arguments for handlePlayerClickToMove, as the real target
+          // will be resolved inside based on the interaction type.
+          float dummy_pos[3] = {0.0f, 0.0f, 0.0f};
+          uint64_t dummy_guid = 0;
+
+          // Call the core CTM handler with interaction type 2.
+          // Pass the actual facing of the clicked target.
+          return handlePlayerClickToMove(g_playerObject, 2, &dummy_guid, dummy_pos, target_facing);
+      }
+
+      // If checks fail, do nothing and return implicitly (likely char 0).
+      return 0; // Indicate CTM not initiated
+    }
+
+    // Global variables accessed
+    extern uint64_t qword_CA1238; // Player GUID
+    extern PlayerObject* dword_BD08F4; // Global Player Object pointer (g_playerObject?)
+    ```
+*   **Functionality:** This function is a specific wrapper for handling clicks on unit/player models ("faces"). It performs several checks: if the target has a valid `WoWUnit` component (checking `field_48 > 0`), if the target is not the player themselves, and if the player object is valid. If these checks pass, it calls the main `handlePlayerClickToMove` function with interaction type `2`, passing the `target_facing` provided as input. It uses dummy values (0) for the target GUID and position arguments passed to `handlePlayerClickToMove`, as the actual target GUID will likely be retrieved inside that function based on the interaction type 2.
+*   **Parameters:**
+    *   `ecx` (target\_obj): Pointer to the target object (Unit/Player) being clicked.
+    *   `a2` (target\_facing): The current facing direction of the target object.
+*   **Return Value:**
+    *   `char` (al): Returns the result of the `handlePlayerClickToMove` call (1 for success, 0 for failure).
+*   **Movement/LoS/Collision Relevance:** **Movement** initiation. It serves as an entry point for click-to-move specifically when clicking on another unit or player model, delegating the main work to `handlePlayerClickToMove` with a specific interaction type.
+
+***
+
+**17. handleTerrainClickToMove (0x72B6D0)**
+
+*   **Disassembly:**
+    ```assembly
+    0x72B6D0: push    ebp
+    0x72B6D1: mov     ebp, esp
+    0x72B6D3: mov     eax, [ecx+0D0h]     ; Load WoWUnit ptr from PlayerObject+0xD0
+    0x72B6D9: xor     edx, edx          ; Zero edx
+    0x72B6DB: sub     esp, 8            ; Allocate local space
+    0x72B6DE: cmp     [eax+48h], edx    ; Check PlayerObject->WoWUnit->field_48 > 0
+    0x72B6E1: jle     short loc_72B722  ; If <= 0, skip
+    0x72B6E3: mov     eax, [ecx+8]      ; Load PlayerObject->GUID struct ptr
+    0x72B6E6: push    esi               ; Save esi
+    0x72B6E7: mov     esi, [eax]        ; Load player GUID low
+    0x72B6E9: cmp     esi, dword ptr qword_CA1238 ; Compare player GUID low
+    0x72B6EF: pop     esi               ; Restore esi
+    0x72B6F0: jnz     short loc_72B722  ; If not player GUID low, skip (Should be JZ to skip if IT IS player?? Logic seems inverted vs handleFaceClickToMove)
+                                      ; -> Rereading: It compares the *player's* GUID struct ptr ([ecx+8]) with the *global* player GUID. It MUST match.
+    0x72B6F0: jnz     short loc_72B722  ; If LOW dword mismatch, skip.
+    0x72B6F2: mov     eax, [eax+4]      ; Load player GUID high
+    0x72B6F5: cmp     eax, dword ptr qword_CA1238+4 ; Compare player GUID high
+    0x72B6FB: jnz     short loc_72B722  ; If HIGH dword mismatch, skip.
+    0x72B6FD: ; Player GUID matches global player GUID
+    0x72B6FD: mov     eax, dword_BD08F4 ; Load global PlayerObject* (redundant check?)
+    0x72B702: cmp     [eax+30h], edx    ; Check PlayerObject->field_30 != 0
+    0x72B705: jz      short loc_72B722  ; If invalid, skip
+    0x72B707: ; Conditions met: Player is self, Player has Unit component with field_48 > 0, Player is valid.
+    0x72B707: fldz                     ; Push 0.0 (for facing argument)
+    0x72B709: push    ecx               ; Push PlayerObject* 'this'
+    0x72B70A: fstp    [esp+0Ch+var_C]   ; Store 0.0 as facing arg (arg 4) for handlePlayerClickToMove
+    0x72B70D: mov     dword ptr [ebp+var_8], edx ; Init target GUID low = 0
+    0x72B710: mov     dword ptr [ebp+var_8+4], edx ; Init target GUID high = 0
+    0x72B713: mov     edx, [ebp+this]   ; Load target position float* 'a2' into edx
+    0x72B716: push    edx               ; Push target_pos_ptr (arg 3)
+    0x72B717: lea     eax, [ebp+var_8]  ; Load address of target_guid (0)
+    0x72B71A: push    eax               ; Push target_guid_ptr (arg 2)
+    0x72B71B: push    4                 ; Push interaction type 4 (Terrain click) (arg 1)
+    0x72B71D: call    handlePlayerClickToMove ; Call core CTM handler
+    0x72B722: loc_72B722:
+    0x72B722: mov     esp, ebp          ; Restore stack
+    0x72B724: pop     ebp
+    0x72B725: retn    4                 ; Return, cleaning 4 bytes (pointer a2)
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Parameters corrected based on disassembly:
+    // ecx = PlayerObject* player_obj // The player object clicking
+    // stack: arg_0 = float* target_pos_ptr // {x,y,z} of the clicked terrain point
+    char handleTerrainClickToMove(PlayerObject *player_obj, float *target_pos_ptr)
+    {
+      // Get the player's WoWUnit component.
+      WoWUnit* player_unit_comp = player_obj->GetWoWUnitComponent(); // Offset +0xD0
+
+      // Perform checks:
+      // 1. Player must have a unit component with field_48 > 0 (Valid unit state?)
+      // 2. Player object's GUID must match the global player GUID.
+      // 3. The global player object pointer must be valid (field_30 != 0).
+      // Note: Checks 2 & 3 seem redundant if ecx is always the player object.
+      if (player_unit_comp != nullptr && player_unit_comp->field_48 > 0 &&
+          player_obj->guid_struct_ptr_8->guid.raw == qword_CA1238.raw &&
+          g_playerObject != nullptr && g_playerObject->field_30 != 0) // Assuming dword_BD08F4 is g_playerObject
+      {
+          // Prepare dummy GUID and facing arguments.
+          uint64_t dummy_guid = 0;
+          float zero_facing = 0.0f;
+
+          // Call the core CTM handler with interaction type 4.
+          // Pass the actual terrain position clicked.
+          return handlePlayerClickToMove(player_obj, 4, &dummy_guid, target_pos_ptr, zero_facing);
+      }
+
+      // If checks fail, do nothing and return implicitly (likely char 0).
+      return 0; // Indicate CTM not initiated
+    }
+
+    // Global variables accessed
+    extern uint64_t qword_CA1238; // Player GUID
+    extern PlayerObject* dword_BD08F4; // Global Player Object pointer (g_playerObject?)
+    ```
+*   **Functionality:** This function is a specific wrapper for handling clicks on the terrain. It checks if the player object is valid (using `field_48 > 0`, matching global GUID, checking `field_30 != 0`). If valid, it calls the main `handlePlayerClickToMove` function with interaction type `4`, passing the actual `target_pos_ptr` where the terrain was clicked. It uses dummy values (0) for the target GUID and facing arguments.
+*   **Parameters:**
+    *   `ecx` (player\_obj): Pointer to the player object.
+    *   `a2` (target\_pos\_ptr): Pointer to the float `{x,y,z}` coordinates of the point clicked on the terrain.
+*   **Return Value:**
+    *   `char` (al): Returns the result of the `handlePlayerClickToMove` call (1 for success, 0 for failure).
+*   **Movement/LoS/Collision Relevance:** **Movement** initiation. Serves as the entry point for click-to-move when clicking on the game world terrain, delegating the main work to `handlePlayerClickToMove` with interaction type 4.
+
+***
+
+**18. updateUnitFacingAndState (0x72EA50)**
+
+*   **Disassembly:**
+    ```assembly
+    0x72EA50: push    ebp
+    0x72EA51: mov     ebp, esp
+    0x72EA53: push    esi               ; Save esi
+    0x72EA54: mov     esi, ecx          ; Move PlayerObject* 'this' from ecx to esi
+    0x72EA56: mov     eax, [esi+8]      ; Load player GUID struct ptr
+    0x72EA59: mov     ecx, [eax]        ; Load player GUID low
+    0x72EA5B: cmp     ecx, dword ptr qword_CA1238 ; Compare with global player GUID low
+    0x72EA61: jnz     short loc_72EA8B  ; If not player, skip reset
+    ; ... compare high GUID ...
+    0x72EA6C: jnz     short loc_72EA8B
+    0x72EA6E: cmp     dword_CA11F4, 0Dh ; Compare global state with 13 (CTM active?)
+    0x72EA75: jz      short loc_72EA8B  ; If CTM active, skip reset
+    0x72EA77: test    byte ptr dword_CA1200, 1 ; Check CTM flags bit 0
+    0x72EA7E: jnz     short loc_72EA8B  ; If CTM flag bit 0 is set, skip reset
+    0x72EA80: ; Is player, not CTM active, CTM flag 0 is clear -> Reset tracking
+    0x72EA80: push    1                 ; Push arg 3 (1)
+    0x72EA82: push    0                 ; Push arg 2 (0)
+    0x72EA84: mov     ecx, esi          ; Move PlayerObject* to ecx
+    0x72EA86: call    reset_tracking_and_input ; Reset tracking state
+    0x72EA8B: loc_72EA8B:
+    0x72EA8B: fld     [ebp+arg_4]       ; Load new facing 'a3' from stack
+    0x72EA8E: mov     eax, [ebp+this]   ; Load timestamp 'a2' into eax
+    0x72EA91: push    ecx               ; Save ecx (contains garbage after cmp)
+    0x72EA92: fstp    [esp+8+var_8]     ; Store new facing 'a3' as arg 2 for updateFacing...
+    0x72EA95: push    eax               ; Push timestamp 'a2' as arg 1
+    0x72EA96: lea     ecx, [esi+788h]   ; Load address of PlayerObject+0x788 (Transform/Matrix?) as arg 0
+    0x72EA9C: call    updateFacingAndQueueMovement ; Update facing and queue movement event
+    0x72EAA1: mov     edx, [esi]        ; Load player vtable ptr
+    0x72EAA3: mov     eax, [edx+138h]   ; Load GetMovementState virt func ptr (+0x138)
+    0x72EAA9: mov     ecx, esi          ; Move PlayerObject* to ecx
+    0x72EAAB: call    eax               ; Call GetMovementState()
+    0x72EAAD: cmp     eax, 3            ; Compare state with 3 (Sitting?)
+    0x72EAB0: jnz     short loc_72EAC9  ; If not sitting, skip stand up
+    0x72EAB2: mov     ecx, [esi+8]      ; Load GUID struct ptr
+    0x72EAB5: mov     edx, [ecx+8]      ; Load Unit flags from GUID struct+8
+    0x72EAB8: shr     edx, 4            ; Shift flags
+    0x72EABB: test    dl, 1             ; Check bit 4 (UNIT_FIELD_FLAGS & UNIT_FLAG_SITTING)
+    0x72EABE: jz      short loc_72EAC9  ; If not actually sitting via flag, skip
+    0x72EAC0: ; Player is sitting, send stand up
+    0x72EAC0: push    0                 ; Push 0 (flags?)
+    0x72EAC2: mov     ecx, esi          ; Move PlayerObject* to ecx
+    0x72EAC4: call    sendPlayerStandStateUpdate ; Send stand up command
+    0x72EAC9: loc_72EAC9:
+    0x72EAC9: pop     esi               ; Restore esi
+    0x72EACA: pop     ebp
+    0x72EACB: retn    8                 ; Return, cleaning up 8 bytes args
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Corrected parameters based on disassembly:
+    // ecx = PlayerObject* player_obj
+    // stack: arg_0 = int timestamp // Misnamed 'this' by HexRays
+    // stack: arg_4 = float new_facing
+    void updateUnitFacingAndState(PlayerObject *player_obj, int timestamp, float new_facing)
+    {
+      // Check if this is the main player, CTM is not active, and a specific CTM flag is clear.
+      if (player_obj->guid_struct_ptr_8->guid.raw == qword_CA1238.raw &&
+          dword_CA11F4 != 13 &&
+          (dword_CA1200 & 1) == 0)
+      {
+        // If so, reset the player's targeting and input state.
+        reset_tracking_and_input(player_obj, 0, 1);
+      }
+
+      // Update the player's facing angle and queue a corresponding movement event/packet.
+      // Passes pointer to offset +0x788 (Transform?) as first arg.
+      updateFacingAndQueueMovement(player_obj->transform_matrix_788, timestamp, new_facing);
+
+      // Check if the player is currently sitting.
+      if (player_obj->GetMovementState() == 3) // Assuming 3 means Sitting state
+      {
+         // Double-check using the unit flag as well.
+         if (player_obj->IsSitting()) // Checks UNIT_FLAG_SITTING
+         {
+            // If sitting, send a command to make the player stand up.
+            sendPlayerStandStateUpdate(player_obj, 0);
+         }
+      }
+    }
+
+    // Global variables accessed
+    extern uint64_t qword_CA1238;    // Player GUID
+    extern int dword_CA11F4;         // Interaction state (13 = CTM active)
+    extern int dword_CA1200;         // CTM flags
+    ```
+*   **Functionality:** This function updates a player's facing and potentially their movement state.
+    1.  It checks if the unit is the main player and if click-to-move is inactive. If so, it resets the player's tracking/targeting state using `reset_tracking_and_input`.
+    2.  It calls `updateFacingAndQueueMovement` to set the new facing direction (`new_facing`) and potentially queue a movement packet/event with the given `timestamp`.
+    3.  It checks the player's current movement state. If the player is sitting (state 3 and `UNIT_FLAG_SITTING` is set), it calls `sendPlayerStandStateUpdate` to make them stand up.
+*   **Parameters:**
+    *   `ecx` (player\_obj): Pointer to the player object structure.
+    *   `a2` (timestamp): Timestamp for the update.
+    *   `a3` (new\_facing): The new facing angle in radians.
+*   **Return Value:** `void`.
+*   **Movement/LoS/Collision Relevance:** **Movement** state management. Updates the player's facing direction, potentially resets targeting state, and handles the transition from sitting to standing when facing is updated.
+
+***
+
+**19. CGUnit_C_SendMovementPacket (0x7413F0)**
+
+*   **Disassembly:** (Significant complexity, focusing on overall structure and key branches)
+    ```assembly
+    0x7413F0: push    ebp
+    0x7413F1: mov     ebp, esp
+    0x7413F3: push    esi
+    0x7413F4: push    edi                   ; Save registers
+    0x7413F5: mov     esi, ecx              ; Move PlayerObject* 'a1' from ecx to esi
+    0x7413F7: call    applyUnitStateEffects ; Apply effects based on unit state (e.g., snare)
+    0x7413FC: mov     edi, [ebp+arg_4]      ; Load Movement Opcode 'a4' into edi
+    ; --- Extensive switch-like structure based on opcode 'a4' (edi) ---
+    ; Example Branches:
+    ;   - Opcodes 183 (B7h), 186 (BAh): Jump to common handler at 741411
+    ;   - Opcodes 188-190 (BCh-BEh): Jump to 7414EA (Check swimming, call processUnitMovementPacket)
+    ;   - Opcodes 191-193 (BFh-C1h): Jump to 741504 (Check rooting, call Unit_HandleMovementPacket_0)
+    ;   - Opcodes 194-195 (C2h-C3h): Jump to common handler at 741411
+    ;   - Opcodes 215-218 (D7h-DAh): Jump to common handler at 741411
+    ;   - Opcode 219 (DBh): Jump to 7414C5 (Check flags, maybe return 0)
+    ;   - Opcode 1113-1115 (459h-45Bh): Jump to common handler at 741411
+    ;   - Other opcodes: Check is_valid_movement_ack_code or potentially stand up if sitting
+
+    ; Common Handler (loc_741411):
+    0x741411: cmp     [ebp+arg_8], 0        ; Check 'send_packet' flag 'a5'
+    0x741415: push    ebx                   ; Save ebx
+    0x741416: mov     ebx, [ebp+arg_0]      ; Load CMovement* 'a2' into ebx
+    0x741419: mov     [ebp+arg_4], 0        ; Clear local variable for return value (edi=opcode reused)
+    0x741420: jz      loc_741567            ; If 'send_packet' is false, skip sending logic
+
+    ; Packet Sending Logic (if send_packet is true):
+    ; ... (Further switch based on opcode) ...
+    ;   - Case 188-190: call processUnitMovementPacket -> Updates internal state, returns bool?
+    ;   - Case 191-193: call Unit_HandleMovementPacket_0 -> Updates internal state, returns bool?
+    ;   - Case 218-219: call areUnitThresholdsMet -> Check conditions
+    ;   - Default Case for sending:
+    0x741529: ; Prepare arguments for SendUnitMovementPacket
+    0x741529: mov     eax, [ebp+arg_1C] ; Load int a10
+    0x74152C: fld     [ebp+arg_C]       ; Load float a6 (speed/pitch?)
+    0x74152F: mov     ecx, [ebp+arg_18] ; Load int a9
+    0x741532: mov     edx, [ebp+arg_14] ; Load int a8
+    0x741535: push    eax               ; Push a10
+    0x741536: mov     eax, [ebp+arg_10] ; Load float a7 (facing?)
+    0x741539: push    ecx               ; Push a9
+    0x74153A: push    edx               ; Push a8
+    0x74153B: push    eax               ; Push a7
+    0x74153C: push    ecx               ; Misuse? Should be PlayerObject* 'a1'? No, PlayerObject* is esi. Maybe CMovement* 'a2'?
+    0x74153D: fstp    [esp+20h+var_20]  ; Store float a6 onto stack
+    0x741540: push    edi               ; Push opcode 'a4'
+    0x741541: push    ebx               ; Push CMovement* 'a2'
+    0x741542: mov     ecx, esi          ; Move PlayerObject* 'a1' to ecx
+    0x741544: call    SendUnitMovementPacket ; Send the packet
+    0x741549: test    eax, eax
+    0x74154B: jz      short loc_741554
+    0x74154D: mov     [ebp+arg_4], 1    ; Set local return flag if SendUnitMovementPacket succeeded
+    0x741554: loc_741554:
+    0x741554: push    ebx               ; Push CMovement* 'a2'
+    0x741555: mov     ecx, esi          ; Move PlayerObject* 'a1' to ecx
+    0x741557: call    sendUnitMovementPackets ; Send any additional queued packets?
+    0x74155C: test    eax, eax
+    0x74155E: jz      short loc_741567
+    0x741560: mov     [ebp+arg_4], 1    ; Set local return flag if sendUnitMovementPackets succeeded
+    0x741567: loc_741567:               ; After potential packet sending/state update
+
+    ; Post-Processing / Command Handling (Check if player object is the main player)
+    0x741567: mov     eax, [esi+8]      ; Get player GUID struct ptr
+    ; ... compare player GUID with global qword_CA1238 ...
+    0x741581: jnz     loc_741695        ; If not the main player, jump to final command handling
+
+    ; Main Player Specific Post-Processing:
+    ; ... (switch based on opcode again) ...
+    ;   - Case 199 (C7h, MSG_MOVE_SET_FACING?): Clear input flags, process input, check CTM, check camera target, handle command
+    ;   - Case 233 (E9h), 235 (EBh): Process input, handle command (movement stops?)
+    ;   - Case 838 (346h): Process input, handle command
+    ;   - Case 183, 186: Check falling flag, process deferred actions, handle command
+    0x741695: loc_741695:               ; Final common path
+    0x741695: push    edi               ; Push original opcode 'a4'
+    0x741696: mov     ecx, esi          ; Move PlayerObject* 'a1' to ecx
+    0x741698: call    handleUnitCommand ; Handle generic command associated with the opcode
+    0x74169D: mov     eax, [ebp+arg_4]  ; Load the local return flag (set if packets were sent successfully)
+    0x7416A0: pop     ebx               ; Restore registers
+    0x7416A1: pop     edi
+    0x7416A2: pop     esi
+    0x7416A3: pop     ebp
+    0x7416A4: retn    20h               ; Return, cleaning 0x20 bytes of arguments
+    ```
+*   **Pseudocode (Hex-Rays):** (Highly simplified due to complexity)
+    ```c++
+    // Parameters likely:
+    // ecx = PlayerObject* player_obj (a1)
+    // stack: arg_0 = CMovement* movement_obj (a2)
+    // stack: arg_4 = int opcode (a4)
+    // stack: arg_8 = char send_packet (a5)
+    // stack: arg_C = float param_float1 (a6) // Speed, pitch?
+    // stack: arg_10 = float param_float2 (a7) // Facing?
+    // stack: arg_14 = int param_int1 (a8)
+    // stack: arg_18 = int param_int2 (a9)
+    // stack: arg_1C = int param_int3 (a10)
+    // a3 from HexRays pseudocode is likely movement_obj passed via stack.
+    int CGUnit_C_SendMovementPacket(PlayerObject *player_obj, CMovement *movement_obj, int opcode, char send_packet, float param_float1, float param_float2, int param_int1, int param_int2, int param_int3)
+    {
+      int packet_sent_successfully = 0;
+
+      // Apply status effects (slows, roots) which might modify movement capabilities.
+      applyUnitStateEffects(player_obj); // Assuming this takes PlayerObject*
+
+      // --- Complex Switch based on Opcode ---
+      // Certain opcodes might modify internal state without sending packets,
+      // or perform checks (swimming, rooted, thresholds).
+      // For example:
+      // if (opcode >= 188 && opcode <= 190) { // Swimming related?
+      //    if (player_obj->IsSwimming() && send_packet) {
+      //       packet_sent_successfully = processUnitMovementPacket(movement_obj, opcode, player_obj); // Updates state
+      //    }
+      // } else if (...) { ... }
+
+      // General case for sending a packet if 'send_packet' flag is set
+      // and the opcode didn't trigger a special internal update path above.
+      bool requires_generic_send = true; // Assume needs sending unless handled above
+      // ... logic to set requires_generic_send based on opcode ...
+
+      if (send_packet && requires_generic_send)
+      {
+         if (SendUnitMovementPacket(player_obj, opcode, movement_obj, param_float1, param_float2, param_int1, param_int2, param_int3)) {
+              packet_sent_successfully = 1;
+         }
+         // Send any other queued packets
+         if (sendUnitMovementPackets(player_obj, movement_obj)) { // Assuming signature
+              packet_sent_successfully = 1;
+         }
+      }
+
+      // --- Post-processing, especially if it's the main player ---
+      if (player_obj->guid_struct_ptr_8->guid.raw == qword_CA1238.raw)
+      {
+        // Further switch based on opcode for player-specific actions
+        switch (opcode) {
+            case 199: // MSG_MOVE_SET_FACING?
+                getActiveCGInputControl()->ClearFlags(); // Simplified
+                getActiveCGInputControl()->ProcessInput(1); // Simplified
+                player_obj->field_9BC = get_system_time_milliseconds(); // Update timestamp
+                if (can_player_click_move(player_obj)) {
+                    reset_tracking_and_input(player_obj, 0, 1);
+                }
+                // Check if active camera is targeting this player? Redundant check?
+                break;
+            case 183: // Stop moving?
+            case 186: // Stop moving?
+            case 233: // Stop moving?
+            case 235: // Stop moving?
+                getActiveCGInputControl()->ProcessInput(1); // Simplified
+                if (!player_obj->IsFalling()) { // Simplified flag check
+                    processLocalPlayerDeferredActions(player_obj);
+                }
+                break;
+            case 838: // Unknown action
+                getActiveCGInputControl()->ProcessInput(1);
+                break;
+        }
+      }
+
+      // --- Final common step: Handle associated command ---
+      handleUnitCommand(player_obj, opcode);
+
+      return packet_sent_successfully; // Return 1 if a packet was likely sent, 0 otherwise
+    }
+    ```
+*   **Functionality:** This is a major dispatcher function for handling and sending various movement-related packets (`MSG_MOVE_...` opcodes).
+    1.  It applies status effects.
+    2.  It enters a large switch-like structure based on the input `opcode`.
+    3.  Some opcodes might trigger internal state updates (`processUnitMovementPacket`, `Unit_HandleMovementPacket_0`) or checks (`areUnitThresholdsMet`) instead of, or before, sending a packet.
+    4.  If the `send_packet` flag is true and the opcode doesn't have specific internal handling, it calls `SendUnitMovementPacket` with the provided parameters and opcode. It might also call `sendUnitMovementPackets` to flush other queued packets.
+    5.  It performs post-processing, especially if the unit is the main player character (`qword_CA1238`). This involves interacting with the input system (`getActiveCGInputControl`, `processPlayerInput`), potentially resetting click-to-move state, and handling deferred actions based on the specific opcode.
+    6.  Finally, it calls `handleUnitCommand` to execute any client-side logic associated with the movement opcode.
+*   **Parameters:** (Many parameters, types inferred)
+    *   `ecx` (a1): Pointer to the `PlayerObject` structure.
+    *   `a2` (arg\_0): Pointer to the corresponding `CMovement` structure.
+    *   `a4` (arg\_4): The movement packet opcode (e.g., `MSG_MOVE_START_FORWARD`, `MSG_MOVE_STOP`, `MSG_MOVE_JUMP`).
+    *   `a5` (arg\_8): Boolean flag indicating whether to actually send a network packet.
+    *   `a6` (arg\_C): Float parameter, usage depends on opcode (speed, pitch?).
+    *   `a7` (arg\_10): Float parameter, usage depends on opcode (facing?).
+    *   `a8`-`a10` (arg\_14, arg\_18, arg\_1C): Integer parameters, usage depends on opcode.
+*   **Return Value:**
+    *   `int` (eax): Returns 1 if `SendUnitMovementPacket` or `sendUnitMovementPackets` was called and returned success, 0 otherwise. This indicates if a packet was likely sent.
+*   **Movement/LoS/Collision Relevance:** Core **Movement** networking function. It orchestrates the sending of almost all player movement updates to the server, based on different actions (start, stop, jump, turn, fall, swim, fly, etc.) represented by opcodes. It also interacts with player input state and potentially triggers client-side command handling related to movement.
+
+***
+
+**20. processWorldFrameTrace (0x77F310)**
+
+*   **Disassembly:**
+    ```assembly
+    0x77F310: push    ebp
+    0x77F311: mov     ebp, esp
+    0x77F313: pop     ebp               ; Effectively removes the frame setup
+    0x77F314: jmp     traceLineAndProcess ; Immediately jump to traceLineAndProcess
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Parameters are identical to traceLineAndProcess
+    int processWorldFrameTrace(float* start_pos, float* end_pos, float* out_hit_pos, float* out_hit_fraction, unsigned int flags, int callback_or_userdata)
+    {
+      // Simply calls traceLineAndProcess with the exact same arguments.
+      return traceLineAndProcess(start_pos, end_pos, out_hit_pos, out_hit_fraction, flags, callback_or_userdata);
+    }
+    ```
+*   **Functionality:** This function is a simple wrapper or alias. It immediately jumps to the `traceLineAndProcess` function, passing along all arguments unchanged. It serves no purpose other than providing an alternative entry point to the same line tracing functionality.
+*   **Parameters:** Same as `traceLineAndProcess`.
+*   **Return Value:** Same as `traceLineAndProcess`.
+*   **Movement/LoS/Collision Relevance:** Identical to `traceLineAndProcess`. Core **LoS/Collision** function via tail-call.
+
+***
+
+**21. InterpolateEntityTransformAndFindNearestNetworkedObject (0x7A39F0)**
+
+*   **Disassembly:** (Focus on logic flow)
+    ```assembly
+    ; ... (Function prologue, save registers) ...
+    0x7A39FF: ; Calculate vectors relative to grid origin (17066.666)
+    0x7A39FF: fld     dword ptr [edi+4]   ; Load start_pos Y (edi = start_pos)
+    0x7A3A02: fld     ds:flt_9E2ACC       ; Load 17066.666
+    0x7A3A08: fsub    st(1), st         ; start_y_rel = start_y - 17066.666
+    ; ... (calculate start_x_rel, end_y_rel, end_x_rel) ...
+    0x7A3A33: ; Calculate difference vector (delta_x, delta_y)
+    0x7A3A33: fxch    st(2)             ; Swap
+    0x7A3A35: fstp    [ebp+var_10]      ; Store delta_y = end_y_rel - start_y_rel
+    0x7A3A38: fsubp   st(1), st         ; delta_x = end_x_rel - start_x_rel
+    0x7A3A3A: fstp    [ebp+var_14]      ; Store delta_x
+    0x7A3A3D: ; Convert start/end points to integer grid coordinates
+    0x7A3A3D: fmul    ds:flt_A3FDA0     ; Multiply start_y_rel by grid scale (0.24?)
+    0x7A3A43: fstp    [ebp+arg_4]       ; Store temp start_y_scaled
+    0x7A3A46: fld     [ebp+arg_4]
+    0x7A3A49: fsub    flt_ADFD8C        ; Subtract grid offset (0.5?)
+    0x7A3A4F: fistp   [ebp+arg_0]       ; Store integer start grid Y
+    ; ... (calculate integer start_x, end_y, end_x grid coordinates) ...
+    0x7A3AA3: ; Check if line segment is long enough or crosses grid boundaries significantly
+    0x7A3AA3: fld     [ebp+var_10]      ; Load delta_y
+    0x7A3AA6: mov     eax, [ebp+var_8]  ; Load integer end_x grid coord
+    0x7A3AA9: fabs                    ; |delta_y|
+    0x7A3AAB: mov     [ebp+var_44], eax ; Store end_x in local var_44
+    0x7A3AAE: fld     ds:flt_9EA27C     ; Load epsilon value (e.g., 0.000000238)
+    0x7A3AB4: mov     [ebp+var_40], edx ; Store end_y in local var_40 (edx holds it)
+    0x7A3AB7: fcom    st(1)             ; Compare |delta_y| with epsilon
+    ; ... (store start_x, start_y) ...
+    0x7A3ABC: mov     [ebp+var_3C], esi ; Store start_x in local var_3C (esi holds it)
+    0x7A3ABF: mov     dword_CE04C8, 0   ; Reset global counter/flag?
+    0x7A3AC9: fnstsw  ax
+    0x7A3ACB: test    ah, 41h           ; Check if |delta_y| <= epsilon (C0=1 or C3=1)
+    0x7A3ACE: jz      short loc_7A3B41  ; If |delta_y| <= epsilon, jump to simple population
+    0x7A3AD0: cmp     edx, ecx          ; Compare start_y_grid (ecx) with end_y_grid (edx)
+    0x7A3AD2: jz      short loc_7A3B41  ; If start_y == end_y, jump to simple population
+    0x7A3AD4: ; Line segment is long enough vertically and crosses grid lines
+    0x7A3AD4: fld     [ebp+var_14]      ; Load delta_x
+    0x7A3AD7: fabs                    ; |delta_x|
+    0x7A3AD9: fcom    st(1)             ; Compare |delta_x| with epsilon (already on stack)
+    0x7A3ADB: fnstsw  ax
+    0x7A3ADD: fstp    st(1)             ; Pop epsilon
+    0x7A3ADF: test    ah, 5             ; Check if |delta_x| > epsilon (C0=0 and C3=0)
+    0x7A3AE2: jnp     short loc_7A3B32  ; If |delta_x| <= epsilon, jump to simpler population
+    0x7A3AE4: cmp     [ebp+var_8], esi  ; Compare start_x_grid (esi) with end_x_grid (var_8)
+    0x7A3AE7: jz      short loc_7A3B32  ; If start_x == end_x, jump to simpler population
+    0x7A3AE9: ; Line segment is also long enough horizontally and crosses grid lines
+    0x7A3AE9: fcompp                  ; Pop |delta_x| and |delta_y|
+    0x7A3AEB: lea     ecx, [ebp+var_44] ; Pointer to grid range {end_x, end_y, start_x, start_y}
+    0x7A3AEE: push    ecx               ; Push grid range ptr
+    0x7A3AEF: lea     edx, [ebp+var_34] ; Pointer to output buffer 1 (float[3])
+    0x7A3AF2: push    edx
+    0x7A3AF3: fnstsw  ax                ; Save FPU status (determines which function to call)
+    0x7A3AF5: fld     [ebp+var_24]      ; Load end_y_rel
+    ; ... (prepare arguments: buffers, relative positions) ...
+    0x7A3AFB: test    ah, 5             ; Test FPU status C0/C3 (related to |delta_x| vs |delta_y| comparison?)
+    ; ... (prepare more arguments) ...
+    0x7A3B1C: jp      short loc_7A3B28  ; If Parity flag set, jump to generateKeyframeSequence
+    0x7A3B1E: call    generateAnimationKeyframes ; Call generation func 1
+    0x7A3B23: add     esp, 0Ch
+    0x7A3B26: jmp     short loc_7A3B51
+    0x7A3B28: loc_7A3B28:
+    0x7A3B28: call    generateKeyframeSequence   ; Call generation func 2
+    0x7A3B2D: add     esp, 0Ch
+    0x7A3B30: jmp     short loc_7A3B51
+    0x7A3B32: loc_7A3B32:             ; Simpler population (line mostly horizontal or vertical?)
+    0x7A3B32: lea     ecx, [ebp+var_44] ; Pointer to grid range
+    ; ... (cleanup FPU stack) ...
+    0x7A3B37: push    ecx               ; Push grid range ptr
+    0x7A3B3A: call    populateIdAndPointerArrayFromRange ; Populate based on range
+    0x7A3B3F: jmp     short loc_7A3B4E
+    0x7A3B41: loc_7A3B41:             ; Simplest population (line very short or within one cell?)
+    0x7A3B41: lea     edx, [ebp+var_44] ; Pointer to grid range
+    ; ... (cleanup FPU stack) ...
+    0x7A3B46: push    edx               ; Push grid range ptr
+    0x7A3B49: call    PopulateRangeWithValues ; Populate based on range (different function?)
+    0x7A3B4E: loc_7A3B4E:
+    0x7A3B4E: add     esp, 4            ; Clean up stack from population call
+    0x7A3B51: loc_7A3B51:             ; After populating potential collision candidates
+    0x7A3B51: mov     eax, [ebp+arg_10] ; Load callback/userdata 'a5'
+    0x7A3B54: mov     ecx, [ebp+arg_C]  ; Load flags 'a4'
+    0x7A3B57: mov     edx, [ebp+arg_8]  ; Load out_hit_fraction ptr 'a3'
+    0x7A3B5A: push    eax               ; Push callback/userdata 'a5'
+    0x7A3B5B: push    ecx               ; Push flags 'a4'
+    0x7A3B5C: push    edx               ; Push out_hit_fraction ptr 'a3'
+    0x7A3B5D: push    ebx               ; Push end_pos ptr 'a2' (ebx holds it)
+    0x7A3B5E: push    edi               ; Push start_pos ptr 'a1' (edi holds it)
+    0x7A3B5F: call    findNearestNetworkedObjectWithCollision ; Perform actual collision check against candidates
+    0x7A3B64: add     esp, 14h          ; Clean up stack args
+    ; ... (Function epilogue, restore registers, return) ...
+    ```
+*   **Pseudocode (Hex-Rays):** (Conceptual)
+    ```c++
+    // Parameters:
+    // a1 = float* start_pos
+    // a2 = float* end_pos
+    // a3 = float* out_hit_fraction // Output: Fraction along line where hit occurred
+    // a4 = unsigned int flags // Collision flags
+    // a5 = _DWORD* callback_or_userdata // User data or callback function pointer?
+    char InterpolateEntityTransformAndFindNearestNetworkedObject(float *start_pos, float *end_pos, float *out_hit_fraction, unsigned int flags, _DWORD *callback_or_userdata)
+    {
+      // 1. Calculate line segment relative to grid origin (17066.666).
+      float start_rel[2] = { start_pos[0] - 17066.666f, start_pos[1] - 17066.666f };
+      float end_rel[2]   = { end_pos[0]   - 17066.666f, end_pos[1]   - 17066.666f };
+      float delta[2]     = { end_rel[0] - start_rel[0], end_rel[1] - start_rel[1] };
+
+      // 2. Convert start/end points to integer grid coordinates using scale (0.24) and offset (0.5).
+      int grid_start[2], grid_end[2];
+      grid_start[0] = (int)(start_rel[0] * 0.23999999f - 0.5f);
+      grid_start[1] = (int)(start_rel[1] * 0.23999999f - 0.5f);
+      grid_end[0]   = (int)(end_rel[0]   * 0.23999999f - 0.5f);
+      grid_end[1]   = (int)(end_rel[1]   * 0.23999999f - 0.5f);
+      int grid_range[4] = { grid_end[0], grid_end[1], grid_start[0], grid_start[1] }; // Used by population functions
+
+      // 3. Determine which cells the line segment intersects based on length and orientation.
+      //    Uses different algorithms (generateAnimationKeyframes, generateKeyframeSequence,
+      //    populateIdAndPointerArrayFromRange, PopulateRangeWithValues) depending on the
+      //    line segment's properties (e.g., length, slope, grid crossings).
+      //    These functions likely populate an internal list of potential colliders
+      //    from the intersected grid cells.
+      float abs_delta_x = fabs(delta[0]);
+      float abs_delta_y = fabs(delta[1]);
+      float epsilon = 0.000000238f; // Defined by flt_9EA27C
+
+      if (abs_delta_y > epsilon && grid_start[1] != grid_end[1]) { // Crosses horizontal grid lines
+          if (abs_delta_x > epsilon && grid_start[0] != grid_end[0]) { // Crosses vertical grid lines too
+              float out_buffer1[3], out_buffer2[3]; // Buffers for generation functions
+              if (abs_delta_x >= abs_delta_y) { // More horizontal than vertical? Check FPU compare result
+                  generateKeyframeSequence(&out_buffer1, &out_buffer2, grid_range);
+              } else {
+                  generateAnimationKeyframes(&out_buffer1, &out_buffer2, grid_range);
+              }
+          } else { // Only crosses horizontal lines (mostly vertical line)
+              populateIdAndPointerArrayFromRange(grid_range);
+          }
+      } else { // Doesn't cross horizontal lines (mostly horizontal or short line)
+          if (abs_delta_x > epsilon && grid_start[0] != grid_end[0]) { // Crosses vertical lines
+              populateIdAndPointerArrayFromRange(grid_range);
+          } else { // Doesn't cross any grid lines significantly (short line within cell)
+              PopulateRangeWithValues(grid_range);
+          }
+      }
+
+      // 4. Call the actual collision detection function, passing the original line segment,
+      //    flags, output pointers, and user data. This function likely uses the
+      //    internally populated list of candidates from step 3.
+      return findNearestNetworkedObjectWithCollision(start_pos, end_pos, out_hit_fraction, flags, callback_or_userdata);
+    }
+
+    // Global variables accessed
+    // float flt_9E2ACC = 17066.666f; // Grid origin offset
+    // float flt_A3FDA0 = 0.23999999f; // Grid scale factor? (Maybe 1 / (MapChunkSize * TileSize) ?)
+    // float flt_ADFD8C = 0.5f; // Grid offset for integer conversion
+    // float flt_9EA27C = 0.000000238f; // Epsilon for float comparisons
+    // int dword_CE04C8; // Counter or flag reset at the start
+    ```
+*   **Functionality:** This function acts as a spatial query optimization layer before performing detailed object collision checks.
+    1.  It takes a line segment (`start_pos`, `end_pos`).
+    2.  It converts the 2D projection of the line segment into integer grid coordinates relative to a fixed origin (17066.6...).
+    3.  Based on the length and orientation of the line segment in grid space, it calls one of several helper functions (`generateAnimationKeyframes`, `generateKeyframeSequence`, `populateIdAndPointerArrayFromRange`, `PopulateRangeWithValues`). These helpers likely identify the grid cells intersected by the line segment and populate an internal list with potential candidate objects residing in those cells.
+    4.  Finally, it calls `findNearestNetworkedObjectWithCollision`, which performs the actual collision tests between the line segment and the candidate objects identified in step 3.
+*   **Parameters:**
+    *   `a1` (start\_pos): Pointer to the float `{x,y,z}` start point of the trace line.
+    *   `a2` (end\_pos): Pointer to the float `{x,y,z}` end point of the trace line.
+    *   `a3` (out\_hit\_fraction): Pointer to a float where the fraction along the line segment of the nearest hit (0.0 to 1.0) will be stored.
+    *   `a4` (flags): Unsigned integer flags controlling the type of collision check (e.g., which object types to hit). Bitmask `0x40F3010F` is checked in `traceLineAndProcess`.
+    *   `a5` (callback\_or\_userdata): Seems to be user data or a callback function pointer passed to the collision check.
+*   **Return Value:**
+    *   `char` (al): Returns the result from `findNearestNetworkedObjectWithCollision`, likely 1 (true) if a collision occurred, 0 (false) otherwise.
+*   **Movement/LoS/Collision Relevance:** Optimization for **Collision** detection and **LoS**. By using a spatial grid, it avoids checking the trace line against every single object in the world, significantly speeding up collision queries, especially long ones. It identifies potential colliders based on grid traversal before passing them to the detailed check.
+
+***
+
+**22. traceLineAndProcess (0x7A3B70)**
+
+*   **Disassembly:**
+    ```assembly
+    0x7A3B70: push    ebp
+    0x7A3B71: mov     ebp, esp
+    0x7A3B73: sub     esp, 18h          ; Allocate local space
+    0x7A3B76: mov     eax, [ebp+arg_10] ; Load flags 'a5' into eax
+    0x7A3B79: add     dword_CE04C4, 1   ; Increment global trace counter
+    0x7A3B80: push    ebx
+    0x7A3B81: push    esi
+    0x7A3B82: mov     esi, [ebp+arg_0]  ; Load start_pos ptr 'a1' into esi
+    0x7A3B85: push    edi
+    0x7A3B86: xor     edi, edi          ; Zero edi (used as null pointer / flag)
+    0x7A3B88: xor     bl, bl            ; Zero bl (hit flag)
+    0x7A3B8A: test    eax, 40F300FFh    ; Check flags for collision with M2/WMOs?
+    0x7A3B8F: mov     [ebp+var_4], edi  ; Init local var_4 (hit object ptr?) to 0
+    0x7A3B92: mov     [ebp+var_8], edi  ; Init local var_8 (hit object data?) to 0
+    0x7A3B95: jz      loc_7A3C2E        ; If flags don't match M2/WMO, skip world collision check
+    0x7A3B9B: ; Check collision with world geometry (WMOs, M2s)
+    0x7A3B9B: mov     ecx, dword_CD754C ; Load global CollisionInfo struct ptr
+    0x7A3BA1: mov     [ecx+12Ch], edi   ; Reset hit object pointer in CollisionInfo
+    0x7A3BA7: lea     edx, [ebp+var_8]  ; Address of local var_8 (output hit object data)
+    0x7A3BAA: push    edx               ; Push ptr for hit data
+    0x7A3BAB: lea     ecx, [ebp+var_4]  ; Address of local var_4 (output hit object ptr)
+    0x7A3BAE: push    ecx               ; Push ptr for hit object
+    0x7A3BAF: mov     ecx, [ebp+arg_C]  ; Load out_hit_fraction ptr 'a4'
+    0x7A3BB2: lea     edx, [ebp+var_C]  ; Address of local var_C (temp hit fraction?) - Seems unused by call
+    0x7A3BB5: push    edx               ; Push unused ptr
+    0x7A3BB6: mov     edx, [ebp+arg_4]  ; Load end_pos ptr 'a2'
+    0x7A3BB9: push    edi               ; Push 0 (WMO Index hint?)
+    0x7A3BBA: push    ecx               ; Push out_hit_fraction ptr 'a4'
+    0x7A3BBB: push    100h              ; Push 256 (Max hits?)
+    0x7A3BC0: push    eax               ; Push flags 'a5'
+    0x7A3BC1: push    edx               ; Push end_pos ptr 'a2'
+    0x7A3BC2: push    esi               ; Push start_pos ptr 'a1'
+    0x7A3BC3: mov     dword ptr qword_CD7768, edi ; Reset global hit GUID low
+    0x7A3BC9: mov     dword ptr qword_CD7768+4, edi ; Reset global hit GUID high
+    0x7A3BCF: call    compute_spatial_occlusion_damage ; Perform world collision check
+    0x7A3BD4: add     esp, 24h          ; Clean up stack
+    0x7A3BD7: test    al, al            ; Check return value (hit occurred?)
+    0x7A3BD9: jz      short loc_7A3C2B  ; If no hit, skip processing hit results
+    0x7A3BDB: ; World geometry hit occurred
+    0x7A3BDB: mov     ecx, [ebp+var_4]  ; Load hit object ptr from local var_4
+    0x7A3BDE: cmp     ecx, edi          ; Check if hit object ptr is non-null
+    0x7A3BE0: jz      short loc_7A3BFF  ; If null, skip setting global GUID
+    0x7A3BE2: mov     eax, [ecx+148h]   ; Load GUID low from hit object+0x148
+    0x7A3BE8: mov     ecx, [ecx+14Ch]   ; Load GUID high from hit object+0x14C
+    0x7A3BEE: mov     edx, eax
+    0x7A3BF0: or      edx, ecx          ; Check if GUID is non-zero
+    0x7A3BF2: jz      short loc_7A3BFF  ; If zero, skip
+    0x7A3BF4: mov     dword ptr qword_CD7768, eax ; Store hit object GUID low globally
+    0x7A3BF9: mov     dword ptr qword_CD7768+4, ecx ; Store hit object GUID high globally
+    0x7A3BFF: loc_7A3BFF:
+    0x7A3BFF: mov     ecx, [ebp+arg_14] ; Load callback/userdata ptr 'a6'
+    0x7A3C02: cmp     ecx, edi          ; Check if callback is non-null
+    0x7A3C04: jz      short loc_7A3C29  ; If null, skip callback
+    0x7A3C06: mov     eax, dword_CD754C ; Load global CollisionInfo ptr
+    0x7A3C0B: cmp     [eax+12Ch], edi   ; Check if CollisionInfo has a hit object ptr
+    0x7A3C11: jz      short loc_7A3C1C  ; If no hit object, use data from var_8
+    0x7A3C13: mov     eax, [eax+13Ch]   ; Load hit object data from CollisionInfo+0x13C
+    0x7A3C19: push    eax               ; Push hit data from CollisionInfo
+    0x7A3C1A: jmp     short loc_7A3C20
+    0x7A3C1C: loc_7A3C1C:
+    0x7A3C1C: mov     edx, [ebp+var_8]  ; Load hit object data from local var_8
+    0x7A3C1F: push    edx               ; Push hit data from local var
+    0x7A3C20: loc_7A3C20:
+    0x7A3C20: push    ecx               ; Push callback/userdata ptr 'a6'
+    0x7A3C21: call    InitializeLevel   ; Misnamed? This is likely the callback execution: callback(userdata, hit_data)
+    0x7A3C26: add     esp, 8            ; Clean up stack
+    0x7A3C29: loc_7A3C29:
+    0x7A3C29: mov     bl, 1             ; Set hit flag to true
+    0x7A3C2B: loc_7A3C2B:
+    0x7A3C2B: mov     eax, [ebp+arg_10] ; Load flags 'a5' again
+    0x7A3C2E: loc_7A3C2E:
+    0x7A3C2E: test    eax, 40F3010Fh    ; Check flags for collision with dynamic objects?
+    0x7A3C33: jz      short loc_7A3C8C  ; If flags don't match, skip object collision check
+    0x7A3C35: ; Check collision with dynamic objects
+    0x7A3C35: mov     edx, [ebp+arg_C]  ; Load out_hit_fraction ptr 'a4'
+    0x7A3C38: mov     ecx, dword_CD754C ; Load global CollisionInfo ptr
+    0x7A3C3E: push    edi               ; Push 0 (callback/userdata for Interpolate...)
+    0x7A3C3F: push    eax               ; Push flags 'a5'
+    0x7A3C40: mov     eax, [ebp+arg_4]  ; Load end_pos ptr 'a2'
+    0x7A3C43: push    edx               ; Push out_hit_fraction ptr 'a4'
+    0x7A3C44: push    eax               ; Push end_pos ptr 'a2'
+    0x7A3C45: push    esi               ; Push start_pos ptr 'a1'
+    0x7A3C46: mov     [ecx+12Ch], edi   ; Reset hit object ptr in CollisionInfo
+    0x7A3C4C: call    InterpolateEntityTransformAndFindNearestNetworkedObject ; Check dynamic objects
+    0x7A3C51: add     esp, 14h          ; Clean up stack
+    0x7A3C54: test    al, al            ; Check return value (hit occurred?)
+    0x7A3C56: jz      short loc_7A3C8C  ; If no hit, skip processing
+    0x7A3C58: ; Dynamic object hit occurred
+    0x7A3C58: mov     ecx, [ebp+arg_14] ; Load callback/userdata ptr 'a6'
+    0x7A3C5B: cmp     ecx, edi          ; Check if callback is non-null
+    0x7A3C5D: mov     dword ptr qword_CD7768, edi ; Reset global hit GUID low
+    0x7A3C63: mov     dword ptr qword_CD7768+4, edi ; Reset global hit GUID high (Object hit doesn't set GUID?)
+    0x7A3C69: jz      short loc_7A3C88  ; If callback null, skip
+    0x7A3C6B: mov     eax, dword_CD754C ; Load global CollisionInfo ptr
+    0x7A3C70: cmp     [eax+12Ch], edi   ; Check if CollisionInfo has a hit object ptr (Should be set by Interpolate...?)
+    0x7A3C76: jz      short loc_7A3C88  ; If no hit object, skip callback (Error?)
+    0x7A3C78: mov     edx, [eax+13Ch]   ; Load hit object data from CollisionInfo+0x13C
+    0x7A3C7E: push    edx               ; Push hit data
+    0x7A3C7F: push    ecx               ; Push callback/userdata ptr 'a6'
+    0x7A3C80: call    InitializeLevel   ; Execute callback: callback(userdata, hit_data)
+    0x7A3C85: add     esp, 8            ; Clean up stack
+    0x7A3C88: loc_7A3C88:
+    0x7A3C88: mov     bl, 1             ; Set hit flag to true
+    0x7A3C8A: jmp     short loc_7A3C90
+    0x7A3C8C: loc_7A3C8C:
+    0x7A3C8C: test    bl, bl            ; Check if any hit occurred (world or object)
+    0x7A3C8E: jz      short loc_7A3CDB  ; If no hit, skip calculating hit position
+    0x7A3C90: loc_7A3C90:
+    0x7A3C90: mov     eax, [ebp+arg_8]  ; Load out_hit_pos ptr 'a3'
+    0x7A3C93: cmp     eax, edi          ; Check if out_hit_pos ptr is non-null
+    0x7A3C95: jz      short loc_7A3CDB  ; If null, skip calculation
+    0x7A3C97: ; Calculate exact hit position using hit fraction
+    0x7A3C97: mov     ecx, [ebp+arg_4]  ; Load end_pos ptr 'a2'
+    0x7A3C9A: fld     dword ptr [ecx]   ; Load end_x
+    0x7A3C9C: fsub    dword ptr [esi]   ; end_x - start_x = delta_x
+    0x7A3C9E: fld     dword ptr [ecx+4] ; Load end_y
+    0x7A3CA1: fsub    dword ptr [esi+4] ; delta_y
+    0x7A3CA4: fld     dword ptr [ecx+8] ; Load end_z
+    0x7A3CA7: mov     ecx, [ebp+arg_C]  ; Load out_hit_fraction ptr 'a4'
+    0x7A3CAA: fsub    dword ptr [esi+8] ; delta_z (st0=dz, st1=dy, st2=dx)
+    0x7A3CAD: fld     dword ptr [ecx]   ; Load hit_fraction (st0=frac, st1=dz, st2=dy, st3=dx)
+    0x7A3CAF: fmul    st(3), st         ; dx *= frac (st0=frac, st1=dz, st2=dy, st3=dx*frac)
+    0x7A3CB1: fmul    st(2), st         ; dy *= frac (st0=frac, st1=dz, st2=dy*frac, st3=dx*frac)
+    0x7A3CB3: fmulp   st(1), st         ; dz *= frac, pop frac (st0=dz*frac, st1=dy*frac, st2=dx*frac)
+    0x7A3CB5: fld     dword ptr [esi]   ; Load start_x (st0=sx, st1=dz*f, st2=dy*f, st3=dx*f)
+    0x7A3CB7: faddp   st(3), st         ; hit_x = dx*frac + start_x, pop sx
+    0x7A3CB9: fxch    st(2)             ; Swap hit_x and dz*f
+    0x7A3CBB: fstp    [ebp+var_18]      ; Store temp hit_x
+    0x7A3CBE: mov     edx, [ebp+var_18] ; Move hit_x bits to edx
+    0x7A3CC1: fadd    dword ptr [esi+4] ; hit_y = dy*frac + start_y
+    0x7A3CC4: fstp    [ebp+var_14]      ; Store temp hit_y
+    0x7A3CC7: mov     ecx, [ebp+var_14] ; Move hit_y bits to ecx
+    0x7A3CCA: fadd    dword ptr [esi+8] ; hit_z = dz*frac + start_z
+    0x7A3CCD: mov     [eax], edx        ; Store hit_x into out_hit_pos[0]
+    0x7A3CCF: mov     [eax+4], ecx      ; Store hit_y into out_hit_pos[1]
+    0x7A3CD2: fstp    [ebp+var_10]      ; Store temp hit_z
+    0x7A3CD5: mov     edx, [ebp+var_10] ; Move hit_z bits to edx
+    0x7A3CD8: mov     [eax+8], edx      ; Store hit_z into out_hit_pos[2]
+    0x7A3CDB: loc_7A3CDB:
+    0x7A3CDB: pop     edi               ; Restore registers
+    0x7A3CDC: pop     esi
+    0x7A3CDD: mov     al, bl            ; Move hit flag (0 or 1) to al
+    0x7A3CDF: pop     ebx
+    0x7A3CE0: mov     esp, ebp
+    0x7A3CE2: pop     ebp
+    0x7A3CE3: retn                      ; Return hit flag
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Parameters:
+    // a1 = float* start_pos
+    // a2 = float* end_pos
+    // a3 = float* out_hit_pos // Optional output for hit coordinate
+    // a4 = float* out_hit_fraction // Optional output for hit fraction (0.0-1.0)
+    // a5 = unsigned int flags // Collision flags
+    // a6 = int callback_or_userdata // Callback function or user data
+    char traceLineAndProcess(float *start_pos, float *end_pos, float *out_hit_pos, float *out_hit_fraction, unsigned int flags, int callback_or_userdata)
+    {
+      ++dword_CE04C4; // Increment global trace counter
+
+      bool hit_occurred = false;
+      WoWObject* hit_object_ptr = nullptr; // Using WoWObject as a guess for type
+      size_t hit_object_data = 0; // Data associated with the hit object
+
+      // Check collision with static world geometry (WMOs, M2 Doodads) if flags match
+      if ((flags & 0x40F300FF) != 0) // FLAG_COLLIDE_WMO | FLAG_COLLIDE_M2 ?
+      {
+        // Reset global hit info
+        g_CollisionInfo->hit_object_ptr_12C = nullptr;
+        qword_CD7768 = 0ULL; // Reset global hit GUID
+
+        // Perform world collision trace
+        if (compute_spatial_occlusion_damage(start_pos, end_pos, flags, 256, out_hit_fraction, nullptr, &hit_object_ptr, nullptr, &hit_object_data))
+        {
+          hit_occurred = true;
+          // If an object was hit, store its GUID globally
+          if (hit_object_ptr != nullptr && hit_object_ptr->guid_struct_ptr_148->guid.raw != 0) // Check offset +0x148
+          {
+             qword_CD7768 = hit_object_ptr->guid_struct_ptr_148->guid.raw;
+          }
+
+          // Execute callback if provided
+          if (callback_or_userdata != 0)
+          {
+             size_t callback_hit_data = g_CollisionInfo->hit_object_ptr_12C ? g_CollisionInfo->hit_object_data_13C : hit_object_data;
+             // Assuming callback signature: void (*Callback)(int userdata, size_t hit_data);
+             ((void (*)(int, size_t))callback_or_userdata)(callback_or_userdata, callback_hit_data); // Calling function pointer with itself as first arg? Odd. Maybe just userdata?
+          }
+        }
+      }
+
+      // Check collision with dynamic objects (Units, GameObjects) if flags match
+      if ((flags & 0x40F3010F) != 0) // FLAG_COLLIDE_OBJECTS | FLAG_COLLIDE_UNITS ?
+      {
+         // Reset global hit info (redundant?)
+         g_CollisionInfo->hit_object_ptr_12C = nullptr;
+         qword_CD7768 = 0ULL; // Object hits don't seem to set this global GUID
+
+         // Perform dynamic object collision trace (uses spatial optimization)
+         if (InterpolateEntityTransformAndFindNearestNetworkedObject(start_pos, end_pos, out_hit_fraction, flags, nullptr)) // Pass null userdata here
+         {
+             hit_occurred = true;
+             // Execute callback if provided and if an object was actually hit and recorded in CollisionInfo
+             if (callback_or_userdata != 0 && g_CollisionInfo->hit_object_ptr_12C != nullptr)
+             {
+                 size_t callback_hit_data = g_CollisionInfo->hit_object_data_13C;
+                 ((void (*)(int, size_t))callback_or_userdata)(callback_or_userdata, callback_hit_data);
+             }
+         }
+      }
+
+      // If a hit occurred and an output position buffer was provided, calculate the hit position
+      if (hit_occurred && out_hit_pos != nullptr && out_hit_fraction != nullptr)
+      {
+          float fraction = *out_hit_fraction;
+          out_hit_pos[0] = start_pos[0] + (end_pos[0] - start_pos[0]) * fraction;
+          out_hit_pos[1] = start_pos[1] + (end_pos[1] - start_pos[1]) * fraction;
+          out_hit_pos[2] = start_pos[2] + (end_pos[2] - start_pos[2]) * fraction;
+      }
+
+      return hit_occurred; // Return true if any collision occurred, false otherwise
+    }
+
+    // Global variables accessed
+    extern int dword_CE04C4;         // Global trace counter
+    extern CollisionInfo* dword_CD754C; // Pointer to global CollisionInfo structure
+    extern uint64_t qword_CD7768;    // Global storage for hit object GUID (primarily from world geometry hits)
+
+    // Assumed CollisionInfo structure fields:
+    // struct CollisionInfo {
+    //    ...
+    //    WoWObject* hit_object_ptr_12C; // Offset +0x12C
+    //    size_t hit_object_data_13C;    // Offset +0x13C
+    //    ...
+    // };
+    ```
+*   **Functionality:** This is the main line tracing (raycasting) function.
+    1.  It increments a global trace counter.
+    2.  Based on the input `flags`, it checks for collision against static world geometry (WMOs, M2 doodads) using `compute_spatial_occlusion_damage`. If a hit occurs, it sets the `hit_occurred` flag, stores the hit object's GUID globally (`qword_CD7768`), and executes an optional callback function (`callback_or_userdata`) with details about the hit.
+    3.  Based on the input `flags`, it checks for collision against dynamic objects (Units, GameObjects) using `InterpolateEntityTransformAndFindNearestNetworkedObject` (which includes spatial optimization). If a hit occurs, it sets the `hit_occurred` flag and executes the optional callback. Note that dynamic object hits do not seem to update the global `qword_CD7768`.
+    4.  If any hit occurred (`hit_occurred` is true) and the `out_hit_pos` pointer is valid, it calculates the exact XYZ coordinates of the hit point using the start position, end position, and the returned `out_hit_fraction`.
+    5.  It returns whether any collision was detected.
+*   **Parameters:**
+    *   `a1` (start\_pos): Pointer to the float `{x,y,z}` start point of the trace line.
+    *   `a2` (end\_pos): Pointer to the float `{x,y,z}` end point of the trace line.
+    *   `a3` (out\_hit\_pos): Optional pointer to a float array `{x,y,z}` to store the coordinates of the hit point. Can be null.
+    *   `a4` (out\_hit\_fraction): Optional pointer to a float to store the fraction along the line segment where the nearest hit occurred (0.0 to 1.0). Can be null.
+    *   `a5` (flags): Unsigned integer flags controlling the type of collision check (e.g., `COLLIDE_WMO`, `COLLIDE_M2`, `COLLIDE_UNITS`, `COLLIDE_GAMEOBJECTS`). Specific flag values are checked using bitmasks `0x40F300FF` and `0x40F3010F`.
+    *   `a6` (callback\_or\_userdata): An integer that can be a user data value or potentially a function pointer for a callback to execute upon hitting something.
+*   **Return Value:**
+    *   `char` (al): 1 (true) if a collision occurred according to the specified flags, 0 (false) otherwise.
+*   **Global Variables/Data:**
+    *   `dword_CE04C4`: Incremented each time a trace is performed.
+    *   `dword_CD754C`: Pointer to a global `CollisionInfo` structure where hit details (object pointer, hit data) are temporarily stored by the collision functions.
+    *   `qword_CD7768`: Global storage for the GUID of the object hit during world geometry collision checks.
+*   **Movement/LoS/Collision Relevance:** Core **LoS/Collision** function. This is used extensively throughout the engine to check for line-of-sight obstructions, detect collisions for projectiles or player movement, determine ground height, find targets under the cursor, etc.
+
+***
+
+**23. updateFacingIfChanged (0x989B70)**
+
+*   **Disassembly:**
+    ```assembly
+    0x989B70: push    ebp
+    0x989B71: mov     ebp, esp
+    0x989B73: fld     [ebp+this]        ; Load new_facing 'a2' from stack argument
+    0x989B76: push    esi               ; Save esi
+    0x989B77: fld     st                ; Duplicate new_facing (st0=new, st1=new)
+    0x989B79: mov     esi, ecx          ; Move CMovement* 'this' from ecx to esi
+    0x989B7B: fsub    dword ptr [esi+20h] ; new_facing - current_facing (at CMovement+0x20)
+    0x989B7E: fabs                    ; |delta|
+    0x989B80: fcomp   ds:flt_9F1224     ; Compare |delta| with epsilon (0.000000953...)
+    0x989B86: fnstsw  ax                ; Get FPU status
+    0x989B88: test    ah, 5             ; Check C0=0 and C3=0 (|delta| > epsilon?)
+    0x989B8B: jnp     short loc_989BA9  ; If |delta| <= epsilon, jump (no significant change)
+    0x989B8D: ; Facing changed significantly
+    0x989B8D: test    dword ptr [esi+44h], 1000h ; Check CMovement status flags for 0x1000 (Turning?)
+    0x989B94: fstp    dword ptr [esi+20h] ; Store new_facing into CMovement+0x20 (pops duplicate)
+    0x989B97: jnz     short loc_989BAB  ; If Turning flag WAS set, jump past anchor update
+    0x989B99: ; Turning flag was NOT set, update anchors
+    0x989B99: push    0                 ; Push 0 (flags?)
+    0x989B9B: call    update_position_and_anchors ; Update position anchors
+    0x989BA0: and     dword ptr [esi+44h], 0FFFFFFCFh ; Clear specific CMovement flags (bits 4 and 5)
+    0x989BA4: pop     esi
+    0x989BA5: pop     ebp
+    0x989BA6: retn    4                 ; Return, cleaning 4 bytes arg
+    0x989BA9: loc_989BA9:               ; Facing did not change significantly
+    0x989BA9: fstp    st                ; Pop the duplicated new_facing value
+    0x989BAB: loc_989BAB:               ; Common exit path after potential anchor update or if turning flag was set
+    0x989BAB: and     dword ptr [esi+44h], 0FFFFFFCFh ; Clear specific CMovement flags (bits 4 and 5) - Always cleared!
+    0x989BAF: pop     esi               ; Restore esi
+    0x989BB0: pop     ebp
+    0x989BB1: retn    4                 ; Return, cleaning 4 bytes arg
+    ```
+*   **Pseudocode (Hex-Rays):**
+    ```c++
+    // Parameters corrected based on disassembly:
+    // ecx = CMovement* this_movement
+    // stack: arg_0 = float new_facing // Renamed from 'this'
+    void updateFacingIfChanged(CMovement *this_movement, float new_facing)
+    {
+      // Compare the new facing angle with the currently stored facing angle.
+      float current_facing = this_movement->current_facing_20; // Offset +0x20
+      float delta_facing = new_facing - current_facing;
+      float epsilon = 0.00000095367432f; // Defined by flt_9F1224
+
+      if (fabs(delta_facing) > epsilon)
+      {
+        // Facing has changed significantly.
+        bool was_turning = (this_movement->status_flags_44 & 0x1000) != 0; // Check Turning flag
+
+        // Update the stored facing angle.
+        this_movement->current_facing_20 = new_facing;
+
+        // If the unit wasn't already marked as turning, update anchors.
+        if (!was_turning)
+        {
+          update_position_and_anchors(this_movement, 0); // Pass 0 as flags?
+        }
+        // No 'else' needed for clearing flags, it happens below unconditionally.
+      }
+      // Else (facing didn't change significantly), do nothing except clear flags below.
+
+      // Always clear specific flags (bits 4 and 5, 0x30). Purpose unclear.
+      // Maybe related to "facing update pending" or similar temporary states?
+      this_movement->status_flags_44 &= ~0x30; // Clear bits 4 and 5 (0x10 | 0x20)
+    }
+
+    // Global variables accessed
+    // extern float flt_9F1224; // Epsilon value for float comparison
+    ```
+*   **Functionality:** This function updates the facing angle stored within the `CMovement` structure (`this_movement->current_facing_20`) only if the provided `new_facing` angle is significantly different from the current one (difference exceeds a small epsilon). If the facing *is* updated, it also checks if a "Turning" flag (0x1000) was already set in the status flags. If the flag was *not* set (meaning this is the start of a turn), it calls `update_position_and_anchors`. Finally, regardless of whether the facing was updated, it clears specific flags (bits 4 and 5) in the `CMovement` status flags.
+*   **Parameters:**
+    *   `ecx` (this\_movement): Pointer to the `CMovement` instance.
+    *   `a2` (new\_facing): The new facing angle (in radians) to potentially apply.
+*   **Return Value:** `void`.
+*   **Movement/LoS/Collision Relevance:** **Movement** state update. It handles the updating of the unit's facing direction, ensuring small floating-point inaccuracies don't trigger unnecessary updates. It also links facing changes to updating positional "anchors" when a turn begins. The flags being cleared might relate to synchronizing rotation updates.
+
+***
+
+Analysis complete for all 23 functions.
+
+
+You've put together the pieces excellently! The cross-references paint a much clearer picture:
+0xBD08F4 (CTM_Activate_Pointer?): This global variable seems crucial for activating or enabling CTM, as many internal functions read it before proceeding. It might point to the player object or a related control structure, but crucially, it's not the base address for reading position data at +0x798/+0x79C. The crash confirms this.
+0xCA11D8 (CTM_Base): This is definitively the start of the dedicated CTM data structure in memory. getClickToMoveDistance reads directly from it (fld flt_CA11D8).
+0xCA11F4 (CTM_Base + 0x1C): This is the action code field within the CTM structure. It's frequently checked and set.
+Player Position (+0x798, +0x79C, +0x7A0): These offsets are relative to the actual player object base pointer, which we were correctly reading from the ObjectManager originally (and which the GUI uses).
+Conclusion & New Strategy:
+We were making two mistakes simultaneously:
+Trying to use the CTM_Activate_Pointer (0xBD08F4) as the base address for reading player position.
+Trying to call the complex game function instead of manipulating the dedicated CTM data structure.
+Let's combine the working parts:
+Player Position Reading: Use the reliable method from ObjectManager (GetLocalPlayer() -> UpdateDynamicData() -> GetPosition()) which uses the correct player object pointer and the swapped 0x798/0x79C offsets defined in wowobject.cpp. This works for the GUI, it should work for the distance check.
+CTM Activation: Use direct memory writes to the CTM structure (0xCA11D8) to set the target coordinates and the action code, and then use the activation pointer (0xBD08F4) to trigger it.
+Revised Plan:
+Restore GrindingEngine.cpp Player/Position Logic: Revert the runLoop to get playerPtr and playerPosition using m_objectManager->GetLocalPlayer(), player->UpdateDynamicData(), and player->GetPosition(). Remove the direct reads using GLOBAL_PLAYER_PTR_ADDR.
+Update MovementController.h: Restore the Vector3 targetPos argument to ClickToMove. Define CTM_X, Y, Z, GUID offsets, and the Activate pointer/offset.
+Update MovementController.cpp: Implement ClickToMove(const Vector3& targetPos) to:
+Write targetPos.x, targetPos.y, targetPos.z to the CTM structure offsets (CTM_Base + CTM_X/Y/Z). Assume standard X/Y order for the CTM structure first (X=0x8C, Y=0x90).
+Write 0 to CTM_Base + CTM_GUID.
+Write 4 to CTM_Base + CTM_Action.
+Read the pointer from CTM_Activate_Pointer (0xBD08F4).
+Write 1 to [Pointer + CTM_Activate_Offset] ([Pointer + 0x30]).
+Let's start by restoring the player/position logic in GrindingEngine.cpp

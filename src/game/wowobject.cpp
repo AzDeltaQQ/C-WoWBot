@@ -8,9 +8,9 @@
 
 // --- Offsets (Assuming these are defined correctly elsewhere or here) ---
 // Object Base Relative
-constexpr DWORD OBJECT_POS_X_OFFSET = 0x79C;
-constexpr DWORD OBJECT_POS_Y_OFFSET = 0x798;
-constexpr DWORD OBJECT_POS_Z_OFFSET = 0x7A0;
+constexpr DWORD OBJECT_POS_X_OFFSET = 0x79C; // Standard X offset
+constexpr DWORD OBJECT_POS_Y_OFFSET = 0x798; // Standard Y offset
+constexpr DWORD OBJECT_POS_Z_OFFSET = 0x7A0; // Z seems correct
 constexpr DWORD OBJECT_ROTATION_OFFSET = 0x7A8;
 constexpr DWORD OBJECT_UNIT_FIELDS_PTR_OFFSET = 0x8;
 constexpr DWORD OBJECT_DESCRIPTOR_PTR_OFFSET = 0x8; // Same as UnitFields for descriptor

@@ -28,6 +28,13 @@ set(SOURCE_FILES
     src/gui/objects_tab.cpp
     src/gui/spells_tab.cpp
     src/gui/log_tab.cpp
+    src/gui/bot_tab.cpp
+    # Add Bot source files
+    src/bot/core/BotController.cpp
+    src/bot/core/MovementController.cpp
+    src/bot/engine/GrindingEngine.cpp
+    src/bot/pathing/PathManager.cpp
+    src/bot/pathing/PathRecorder.cpp
 )
 
 # ImGui source files using new paths
@@ -62,6 +69,9 @@ target_include_directories(WoWDX9Hook PRIVATE
     ${CMAKE_SOURCE_DIR}/src/game
     ${CMAKE_SOURCE_DIR}/src/utils
     ${CMAKE_SOURCE_DIR}/src/gui
+    ${CMAKE_SOURCE_DIR}/src/bot/core    # Add bot include dirs
+    ${CMAKE_SOURCE_DIR}/src/bot/engine
+    ${CMAKE_SOURCE_DIR}/src/bot/pathing
     ${CMAKE_SOURCE_DIR}/dependencies/ImGui
     ${CMAKE_SOURCE_DIR}/dependencies/ImGui/backends
     ${CMAKE_SOURCE_DIR}/dependencies/MinHook/include # MinHook include is already absolute if add_library uses PUBLIC

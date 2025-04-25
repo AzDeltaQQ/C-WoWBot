@@ -8,6 +8,7 @@
 #include "log.h"
 #include "functions.h"
 #include "gui.h"
+#include "wowobject.h"
 
 #pragma comment(lib, "d3d9.lib")
 
@@ -79,16 +80,24 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     }
 
     if (GUI::IsInitialized()) {
+        ObjectManager* objMgr = ObjectManager::GetInstance();
+
         HRESULT coopLevel = pDevice->TestCooperativeLevel();
         if (coopLevel != D3D_OK) {
             if (coopLevel == D3DERR_DEVICELOST) {
+                // Device lost, needs reset. Don't render anything.
                 return oEndScene(pDevice);
             } else if (coopLevel == D3DERR_DEVICENOTRESET) {
+                // Device needs reset, signal for re-initialization after reset.
                 g_needsWin32Reinit = true;
+                // Still call original EndScene? Yes, likely needed for game loop.
+                 return oEndScene(pDevice);
             } else {
+                // Some other error, maybe try calling original EndScene.
                  return oEndScene(pDevice);
             }
         } else if (g_needsWin32Reinit) {
+            // Device is OK now, and we previously needed re-initialization (after D3DERR_DEVICENOTRESET)
             LogMessage("HookedEndScene: Device OK. Performing delayed Win32 re-initialization...");
 
             HWND currentHwnd = nullptr;
@@ -115,23 +124,25 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
             g_needsWin32Reinit = false;
         }
 
-        ObjectManager* objMgr = ObjectManager::GetInstance();
+        // --- Restore Player Update Logic --- 
         if (!objMgr->IsInitialized()) {
-            objMgr->TryFinishInitialization();
+            objMgr->TryFinishInitialization(); // Keep trying to initialize if not ready
         } else {
+            // ObjectManager is initialized, proceed with player updates
             uint64_t playerGuid = objMgr->GetLocalPlayerGUID();
             DWORD clientState = 0;
             try {
                 clientState = *reinterpret_cast<DWORD*>(CLIENT_STATE_ADDR);
             } catch (...) {
-                clientState = 0;
+                clientState = 0; // Default or handle error
             }
 
-            if (playerGuid != 0 && clientState == 10) {
-                auto player = objMgr->GetLocalPlayer();
+            // Check if player is valid and in the world (clientState == 10 typically means 'loaded into world')
+            if (playerGuid != 0 && clientState == 10) { 
+                auto player = objMgr->GetLocalPlayer(); // Get player object again
                 if (player) {
                     try {
-                        player->UpdateDynamicData();
+                        player->UpdateDynamicData(); // Update player data like position, health etc.
                     } catch (const std::exception& e) {
                         LogStream errLog;
                         errLog << "[HookedEndScene] EXCEPTION calling player->UpdateDynamicData(): " << e.what();
@@ -142,6 +153,7 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
                 }
             }
         }
+        // --- End Player Update Logic ---
 
         if (GetAsyncKeyState(VK_INSERT) & 1) {
             GUI::ToggleVisibility();

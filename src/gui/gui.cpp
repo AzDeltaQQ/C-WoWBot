@@ -9,6 +9,7 @@
 #include "objects_tab.h"
 #include "spells_tab.h"
 #include "log_tab.h"
+#include "bot_tab.h"
 
 // Forward declare message handler from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -25,6 +26,7 @@ namespace GUI {
     HWND g_hWnd = nullptr;
     WNDPROC oWndProc = nullptr;
     LPDIRECT3DDEVICE9 g_pd3dDevice = nullptr; // Add device pointer
+    BotController* g_BotController = nullptr; // Define and initialize the global pointer
 
     void Initialize(HWND hwnd, LPDIRECT3DDEVICE9 pDevice) {
         game_hwnd = hwnd;
@@ -225,6 +227,10 @@ namespace GUI {
             }
             if (ImGui::BeginTabItem("Spells")) {
                 RenderSpellsTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Bot")) {
+                render_bot_tab(g_BotController);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Log")) {

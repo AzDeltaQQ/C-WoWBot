@@ -6,6 +6,11 @@
 
 // Function pointer types and extern declarations will go here
 
+// ClickToMove (CTM) - Higher Level Handlers
+// Signature defined in MovementController.h (HandleTerrainClickFn)
+const DWORD OFF_HandleTerrainClick = 0x00727400; // Address for CORE CTM function (handlePlayerClickToMove)
+// const DWORD OFF_ClickToMove = 0x704CD0; // Lower-level CTM - Not using currently
+
 // CastLocalPlayerSpell Function
 typedef char (__cdecl* CastLocalPlayerSpellFn)(int spellId, int unknownIntArg1, uint64_t targetGuid, char unknownCharArg);
 extern CastLocalPlayerSpellFn CastLocalPlayerSpell;
