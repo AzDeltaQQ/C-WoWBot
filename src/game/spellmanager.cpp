@@ -9,14 +9,93 @@
 #include <windows.h>
 #include <cstdio> // For printf/logging
 #include <cstring>      // For memcpy
+#include <string>      // For std::string
 
 // Include the actual memory reader utility
 #include "../utils/memory.h" 
 
-namespace { // Anonymous namespace for constants
+// --- REMOVED: Define function pointer types --- 
+// -------------------------------------------
+
+namespace { // Anonymous namespace for constants and helpers
     constexpr uintptr_t SpellCountAddr = 0x00BE8D9C;
     constexpr uintptr_t SpellBookAddr = 0x00BE5D88;
     constexpr size_t MaxSpellbookSize = 1023; // Based on disassembly comment
+
+    // --- REMOVED: Addresses related to DBC access --- 
+
+    // --- Spell Info Constants ---
+    constexpr uintptr_t ADDR_SpellDBContextPtr = 0x00AD49D0;
+    constexpr uintptr_t ADDR_CompressionFlag   = 0x00C5DEA0;
+    constexpr size_t    SPELL_RECORD_SIZE      = 0x2A8; // 680 bytes
+
+    // Offsets within SpellDBContext structure (pointed to by ADDR_SpellDBContextPtr)
+    constexpr uint32_t OFFSET_CONTEXT_MAX_ID = 0x0C;
+    constexpr uint32_t OFFSET_CONTEXT_MIN_ID = 0x10;
+    constexpr uint32_t OFFSET_CONTEXT_INDEX_TABLE_PTR = 0x20; // Points to array of pointers to spell records
+
+    // Offsets within the 0x2A8 byte Spell Record
+    constexpr uint32_t OFFSET_RECORD_NAME_PTR = 0x1C0; // char*
+    // Add other offsets later as needed (Rank: 0x1C4, Desc: 0x228, Tooltip: 0x22C, IconID: 0x1B4, PowerType: 0xA4)
+    // ---------------------------
+
+    // --- Memory Reading Helpers ---
+
+    // Basic memory validity check (use with caution, IsBadReadPtr has limitations)
+    // A more robust solution might involve VirtualQuery or SEH
+    bool IsValidReadPtrHelper(const void* ptr, size_t size = 1) {
+        if (ptr == nullptr) return false;
+        // IsBadReadPtr is generally discouraged, but simple for in-process checks
+        // It returns TRUE if the pointer is BAD, so we negate it.
+        // Requires <windows.h>
+        return !IsBadReadPtr(ptr, size);
+    }
+
+    // Reads a null-terminated string from a potentially unsafe pointer
+    // Stops after maxLen characters to prevent reading too far on unterminated strings
+    std::string SafeReadStringHelper(const char* ptrToString, size_t maxLen = 256) {
+        if (!IsValidReadPtrHelper(ptrToString)) {
+            return "[Invalid Str Ptr]";
+        }
+
+        std::vector<char> buffer;
+        buffer.reserve(maxLen + 1); // Reserve space
+
+        try {
+            for (size_t i = 0; i < maxLen; ++i) {
+                // Check validity of pointer for the current character
+                 if (!IsValidReadPtrHelper(ptrToString + i)) {
+                     // Hit invalid memory before null terminator or maxLen
+                     buffer.push_back('\0'); // Null-terminate what we have
+                     LogMessage("SafeReadStringHelper: Hit invalid memory reading string."); // Optional log
+                     break;
+                 }
+
+                // Read character using MemoryReader (catches exceptions)
+                char current_char = MemoryReader::Read<char>(reinterpret_cast<uintptr_t>(ptrToString + i));
+                if (current_char == '\0') {
+                    break; // End of string
+                }
+                buffer.push_back(current_char);
+            }
+            // Ensure null termination if loop finished without finding null char (maxLen reached)
+            buffer.push_back('\0');
+            return std::string(buffer.data());
+
+        } catch (const std::runtime_error& e) {
+            LogStream ssErr;
+            ssErr << "SafeReadStringHelper: Exception reading string - " << e.what();
+            LogMessage(ssErr.str());
+            return "[String Read Error]";
+        } catch (...) {
+            LogMessage("SafeReadStringHelper: Unknown exception reading string.");
+            return "[String Read Unknown Error]";
+        }
+    }
+    // --- End Memory Reading Helpers ---
+
+    // --- REMOVED: ReadFromBuffer / ReadFromRawPtr helpers --- 
+
 } // namespace
 
 // Initialize singleton instance pointer
@@ -130,6 +209,133 @@ std::vector<uint32_t> SpellManager::ReadSpellbook() {
     return spell_ids;
 }
 
+// --- CORRECTED GetSpellNameByID Implementation --- (Replacing with user-provided code)
+std::string SpellManager::GetSpellNameByID(uint32_t spellId) {
+    LogStream ssTrace; // For detailed tracing
+    ssTrace << "GetSpellNameByID Enter: SpellID=" << spellId;
+    LogMessage(ssTrace.str());
+
+    try {
+        // --- CORRECTED LOGIC ---
+        // Addresses relative to the static pointer location ADDR_SpellDBContextPtr (0xAD49D0)
+        constexpr uintptr_t ADDR_MinID = ADDR_SpellDBContextPtr + 0x10; // 0xAD49E0
+        constexpr uintptr_t ADDR_MaxID = ADDR_SpellDBContextPtr + 0x0C; // 0xAD49DC
+        constexpr uintptr_t ADDR_IndexOfTablePtrValue = ADDR_SpellDBContextPtr + 0x20; // 0xAD49F0
+
+        // 1. Read MinID, MaxID, and the pointer to the Index Table directly
+        uint32_t minID = 0;
+        uint32_t maxID = 0;
+        uintptr_t indexTablePtr = 0; // This will hold the POINTER to the array of record pointers
+        try {
+            minID = MemoryReader::Read<uint32_t>(ADDR_MinID);
+            maxID = MemoryReader::Read<uint32_t>(ADDR_MaxID);
+            indexTablePtr = MemoryReader::Read<uintptr_t>(ADDR_IndexOfTablePtrValue); // Read the pointer value
+
+            ssTrace = LogStream(); // Reuse stream
+            ssTrace << "  Read MinID from 0x" << std::hex << ADDR_MinID << " = " << std::dec << minID; LogMessage(ssTrace.str());
+            ssTrace = LogStream(); ssTrace << "  Read MaxID from 0x" << std::hex << ADDR_MaxID << " = " << std::dec << maxID; LogMessage(ssTrace.str());
+            ssTrace = LogStream(); ssTrace << "  Read IndexTablePtr Value from 0x" << std::hex << ADDR_IndexOfTablePtrValue << " = 0x" << std::hex << indexTablePtr; LogMessage(ssTrace.str());
+
+        } catch (const std::runtime_error& readErr) {
+            LogStream ssErr;
+            ssErr << "GetSpellNameByID Error: Exception reading Min/Max/TablePtrValue: " << readErr.what();
+            LogMessage(ssErr.str());
+            return "[Context Data Read Error]";
+        }
+        // --- END CORRECTED LOGIC ---
+
+
+        // 2. Validate Spell ID range and IndexTablePtr value
+        if (spellId < minID || spellId > maxID) {
+            ssTrace = LogStream(); ssTrace << "  Result: ID " << std::dec << spellId << " out of range (" << minID << "-" << maxID << ")"; LogMessage(ssTrace.str());
+            return "[ID Out of Range]";
+        }
+        if (indexTablePtr == 0) {
+            LogMessage("GetSpellNameByID Error: IndexTablePtr read is NULL.");
+            return "[Null Index Tbl]";
+        }
+        // Check if the INDEX TABLE POINTER points to valid memory
+        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(indexTablePtr))) {
+             LogStream ssErr; ssErr << "GetSpellNameByID Error: IndexTablePtr 0x" << std::hex << indexTablePtr << " points to invalid memory."; LogMessage(ssErr.str());
+            return "[Invalid Index Tbl Ptr]";
+        }
+
+        // 3. Calculate index and get Record Pointer address (within the index table)
+        uint32_t index = spellId - minID;
+        uintptr_t pRecordPtrAddr = indexTablePtr + (index * sizeof(uintptr_t)); // Address of the pointer *within* the index table
+        ssTrace = LogStream(); ssTrace << "  Calculated Index=" << std::dec << index << ", Addr of Record Ptr = 0x" << std::hex << pRecordPtrAddr; LogMessage(ssTrace.str());
+
+        // Check if the address *within* the index table is readable
+        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(pRecordPtrAddr))) {
+             LogStream ssErr; ssErr << "GetSpellNameByID Error: Cannot read from index table at address 0x" << std::hex << pRecordPtrAddr; LogMessage(ssErr.str());
+            return "[Invalid Index Entry Addr]";
+        }
+
+        // 4. Get the actual Record Pointer value from the index table
+        uintptr_t recordPtr = MemoryReader::Read<uintptr_t>(pRecordPtrAddr);
+        ssTrace = LogStream(); ssTrace << "  Read Record Ptr from Index Table = 0x" << std::hex << recordPtr; LogMessage(ssTrace.str());
+
+        if (recordPtr == 0) {
+             // This might be normal for unused spell IDs within the range
+             // LogStream ssWarn; ssWarn << "GetSpellNameByID: Null record pointer for Spell ID " << spellId << "."; LogMessage(ssWarn.str());
+            return "[Null Record Ptr]";
+        }
+        // Check if the record pointer points to valid memory
+         if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(recordPtr))) {
+             LogStream ssErr; ssErr << "GetSpellNameByID Error: RecordPtr 0x" << std::hex << recordPtr << " points to invalid memory."; LogMessage(ssErr.str());
+            return "[Invalid Record Ptr]";
+        }
+
+        // 5. Check for compression
+        uint8_t isCompressed = MemoryReader::Read<uint8_t>(ADDR_CompressionFlag);
+        if (isCompressed) {
+             LogMessage("GetSpellNameByID: Spell record is compressed (not supported).");
+            return "[Compressed Record]";
+        }
+
+        // 6. Get the address where the name pointer is stored within the record
+        // uintptr_t namePtrAddr = recordPtr + OFFSET_RECORD_NAME_PTR; // Original 0x1C0
+        // Test Rank offset
+        // uintptr_t namePtrAddr = recordPtr + 0x1C4;
+        // Test Description offset
+        // uintptr_t namePtrAddr = recordPtr + 0x228;
+        // Test Tooltip offset
+        // uintptr_t namePtrAddr = recordPtr + 0x22C;
+        // Test DBC Name offset (Field 137 -> 0x220)
+        constexpr uint32_t OFFSET_DBC_NAME_PTR = 0x220;
+        uintptr_t namePtrAddr = recordPtr + OFFSET_DBC_NAME_PTR; 
+        ssTrace = LogStream(); ssTrace << "  Address of Ptr within record (Testing DBC Offset 0x220) = 0x" << std::hex << namePtrAddr; LogMessage(ssTrace.str());
+
+         // Check if the address *within* the record holding the name pointer is readable
+         if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(namePtrAddr), sizeof(char*))) {
+             LogStream ssErr; ssErr << "GetSpellNameByID Error: Cannot read name pointer address from record at 0x" << std::hex << namePtrAddr; LogMessage(ssErr.str());
+            return "[Invalid Record Data @ Name]";
+        }
+
+        // 7. Read the name pointer from the record
+        char* pszName = MemoryReader::Read<char*>(namePtrAddr); // Read the pointer to the string
+        ssTrace = LogStream(); ssTrace << "  Read Name Ptr Value = 0x" << std::hex << reinterpret_cast<uintptr_t>(pszName); LogMessage(ssTrace.str());
+
+
+        // 8. Read the string safely using the helper function
+        std::string resultName = SafeReadStringHelper(pszName);
+        ssTrace = LogStream(); ssTrace << "  SafeReadString Result: \"" << resultName << "\""; LogMessage(ssTrace.str());
+        return resultName;
+
+    } catch (const std::runtime_error& e) {
+        LogStream ssErr;
+        ssErr << "GetSpellNameByID: Runtime error for spell ID " << spellId << " - " << e.what();
+        LogMessage(ssErr.str());
+        return "[Read Error]";
+    } catch (...) {
+        LogStream ssErr;
+        ssErr << "GetSpellNameByID: Unknown exception for spell ID " << spellId;
+        LogMessage(ssErr.str());
+        return "[Unknown Error]";
+    }
+}
+// --- End GetSpellNameByID ---
+
 // Define the function pointer type for get_spell_cooldown_proxy (0x809000)
 // Ensure DWORD is defined appropriately (e.g., via <windows.h> or manually)
 #ifndef DWORD
@@ -140,7 +346,7 @@ typedef bool(__cdecl* GetSpellCooldownProxyFn)(int spellId, int playerOrPetFlag,
 // The address of the target function in the game's memory space
 const uintptr_t GET_SPELL_COOLDOWN_PROXY_ADDR = 0x809000;
 
-// --- Cooldown Patch Logic --- 
+// --- Cooldown Patch Logic ---
 
 // Structure to hold patch information (optional but good practice)
 struct MemoryPatch {
@@ -155,7 +361,7 @@ struct MemoryPatch {
 // Helper to apply a single patch
 bool ApplyPatch(uintptr_t address, const std::vector<unsigned char>& patchBytes) {
     size_t patchSize = patchBytes.size();
-    
+
     DWORD oldProtect;
     // 1. Change memory protection
     if (!VirtualProtect((LPVOID)address, patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
@@ -189,7 +395,7 @@ void SpellManager::PatchCooldownBug_Final() {
     // --- GCD Block Patches (Addresses: 0x807BD4, 0x807BD7, 0x807BDB) ---
     LogMessage("Applying GCD block patches...");
     // Patch 1: 0x807BD4 (Change mov edx,[ebp+10h] to mov eax,[ebp+10h])
-    success &= ApplyPatch(0x807BD4, {0x8B, 0x45, 0x10}); 
+    success &= ApplyPatch(0x807BD4, {0x8B, 0x45, 0x10});
 
     // Patch 2: 0x807BD7 (Change test edx,edx to test eax,eax)
     success &= ApplyPatch(0x807BD7, {0x85, 0xC0});
@@ -244,7 +450,7 @@ int GetSpellCooldownInternal(int spellId, int playerOrPetFlag) {
         }
     } catch (...) {
         LogStream ssErr;
-        ssErr << "SpellManager: Exception calling get_spell_cooldown_proxy at address 0x" 
+        ssErr << "SpellManager: Exception calling get_spell_cooldown_proxy at address 0x"
               << std::hex << GET_SPELL_COOLDOWN_PROXY_ADDR;
         LogMessage(ssErr.str());
         return -1; // Indicate an error
@@ -260,3 +466,23 @@ int SpellManager::GetSpellCooldownMs(int spellId) {
 int SpellManager::GetPetSpellCooldownMs(int spellId) {
     return GetSpellCooldownInternal(spellId, 1); // 1 for pet
 }
+
+// --- REMOVED GetSpellInfoRaw implementation ---
+
+// --- REMOVED GetSpellInfo implementation ---
+
+/**
+ * @brief Gets the spell IDs from the player's spellbook.
+ *
+ * Just calls ReadSpellbook.
+ *
+ * @return A vector of spell IDs.
+ */
+std::vector<uint32_t> SpellManager::GetSpellbookIDs() {
+    return ReadSpellbook(); // Simply return the result of ReadSpellbook
+}
+
+// --- End of Simplified Methods ---
+
+// Initialization (if needed in the future)
+// ... rest of existing code ...

@@ -3,6 +3,7 @@
 #include "objectmanager.h" // For IsInitialized()
 #include "spellmanager.h"  // Updated for new SpellManager functions
 #include "log.h"
+#include "../utils/memory.h" // Needed for MemoryReader
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -17,106 +18,67 @@ namespace { // Anonymous namespace for constants
     
     // State for the Spells tab
     static int spellIdToCast = 0; 
-    static std::vector<uint32_t> spellbook_ids; // To store dumped spell IDs
+    static std::vector<uint32_t> spellbook_ids; // Correct type
     static bool spellbook_dumped = false; // Flag to check if dumped
 } // namespace
 
 void RenderSpellsTab() {
-    ObjectManager* objMgr = ObjectManager::GetInstance(); // Needed for IsInitialized check
+    ImGui::TextUnformatted("Player Spell Management");
 
-    ImGui::InputInt("Spell ID", &spellIdToCast);
-    
-    // Disable button if ObjMgr isn't ready or function ptr invalid (checked inside CastSpell)
-    bool canCast = objMgr->IsInitialized(); 
-    if (!canCast) {
-        ImGui::BeginDisabled();
-    }
-    
-    if (ImGui::Button("Cast Spell on Target")) {
-        uint64_t currentTargetGuid = 0;
-        try {
-            // Read the target GUID directly from the address
-            // WARNING: Reading directly like this can be unsafe if the address is invalid!
-            // A safer approach might involve game functions if available.
-            currentTargetGuid = *(uint64_t*)ADDR_CurrentTargetGUID;
-            
-            LogStream ss;
-            ss << "GUI::SpellsTab: Attempting to cast SpellID: " << spellIdToCast 
-                << " on TargetGUID: 0x" << std::hex << currentTargetGuid;
-            LogMessage(ss.str());
-            
-            if (currentTargetGuid != 0) {
-                // Assuming SpellManager is the right place for ReadSpellbook
-                bool success = SpellManager::GetInstance().CastSpell(spellIdToCast, currentTargetGuid);
-                LogMessage(success ? "GUI::SpellsTab: CastSpell call succeeded (returned true)." : "GUI::SpellsTab: CastSpell call failed (returned false).");
-            } else {
-                LogMessage("GUI::SpellsTab: No target selected (GUID is 0).");
-            }
-            
-        } catch (const std::exception& e) {
-            LogStream ssErr;
-            ssErr << "GUI::SpellsTab: Exception reading target GUID or casting spell: " << e.what();
-            LogMessage(ssErr.str());
-        } catch (...) {
-            LogMessage("GUI::SpellsTab: Unknown exception reading target GUID or casting spell.");
+    // --- Spell Casting Section ---
+    ImGui::Separator();
+    ImGui::Text("Cast Spell:");
+    ImGui::InputInt("Spell ID", &spellIdToCast); 
+    if (ImGui::Button("Cast")) {
+        uint64_t targetGuid = 0;
+        try { // Safely read target GUID
+            targetGuid = MemoryReader::Read<uint64_t>(ADDR_CurrentTargetGUID);
+        } catch (const std::runtime_error& e) {
+             LogStream ssErr;
+             ssErr << "GUI::SpellsTab: Error reading target GUID from 0x" << std::hex << ADDR_CurrentTargetGUID << ": " << e.what();
+             LogMessage(ssErr.str());
+             targetGuid = 0; // Default to 0 on error
         }
+        SpellManager::GetInstance().CastSpell(spellIdToCast, targetGuid);
     }
-    
-    if (!canCast) {
-        ImGui::EndDisabled();
-    }
-
-    ImGui::Separator(); // Add a separator
+    ImGui::Separator();
 
     // --- Spellbook Dump Section ---
-    if (ImGui::Button("Dump Spellbook")) {
-        LogMessage("GUI::SpellsTab: Dump Spellbook button clicked.");
+    if (ImGui::Button("Dump Spellbook IDs")) { 
+        LogMessage("GUI::SpellsTab: Dump Spellbook IDs button clicked.");
         try {
-            // Placeholder: Call the function to read the spellbook
-            // We assume this function exists in SpellManager for now.
-            // It should handle reading SpellCount and the SpellBook array.
-            spellbook_ids = SpellManager::GetInstance().ReadSpellbook(); 
+            // Use GetSpellbookIDs 
+            spellbook_ids = SpellManager::GetInstance().GetSpellbookIDs(); 
             spellbook_dumped = true; 
             LogStream ss;
             ss << "GUI::SpellsTab: Read " << spellbook_ids.size() << " spell IDs from spellbook.";
             LogMessage(ss.str());
         } catch (const std::exception& e) {
              LogStream ssErr;
-             ssErr << "GUI::SpellsTab: Exception dumping spellbook: " << e.what();
+             ssErr << "GUI::SpellsTab: Exception dumping spellbook IDs: " << e.what();
              LogMessage(ssErr.str());
              spellbook_dumped = false; // Reset flag on error
         } catch (...) {
-            LogMessage("GUI::SpellsTab: Unknown exception dumping spellbook.");
+            LogMessage("GUI::SpellsTab: Unknown exception dumping spellbook IDs.");
             spellbook_dumped = false; // Reset flag on error
         }
     }
 
     // Display the dumped spellbook if available
     if (spellbook_dumped) {
-        ImGui::BeginChild("SpellbookDisplay", ImVec2(0, 200), true); // Child window with border
+        ImGui::BeginChild("SpellbookDisplay", ImVec2(0, 200), true); 
         ImGui::Text("Spellbook Contents (%zu entries):", spellbook_ids.size());
         ImGui::Separator();
-        for (uint32_t spell_id : spellbook_ids) {
-            std::ostringstream oss;
-            // TODO: Map spell_id to name if you have DBC access
-            // oss << "ID: " << spell_id;
+        // Iterate through the spell IDs vector
+        for (const uint32_t& spellId : spellbook_ids) { 
+            // Call GetSpellNameByID to get the name
+            std::string spellName = SpellManager::GetSpellNameByID(spellId);
             
-            // Check cooldown
-            int cooldownMs = SpellManager::GetSpellCooldownMs(spell_id);
-            
-            oss << "ID: " << spell_id;
-            if (cooldownMs > 0) {
-                oss << " (CD: " << std::fixed << std::setprecision(1) << (cooldownMs / 1000.0) << "s)";
-            } else if (cooldownMs == 0) {
-                oss << " (Ready)";
-            } else { // cooldownMs < 0
-                oss << " (Error)";
-            }
-
-            ImGui::TextUnformatted(oss.str().c_str());
+            // Format the output string to include ID and Name
+            ImGui::Text("ID: %u - Name: %s", spellId, spellName.c_str());
         }
         ImGui::EndChild();
     } else {
-         ImGui::TextUnformatted("Click 'Dump Spellbook' to view spells.");
+         ImGui::TextUnformatted("Click 'Dump Spellbook IDs' to view spells.");
     }
 } 

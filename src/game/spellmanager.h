@@ -6,6 +6,7 @@
 #include "functions.h" // For CastLocalPlayerSpellFn
 #include "log.h"
 #include <string>
+// REMOVED: #include "spell_info.h" // Will be simplified later
 
 class SpellManager {
 private:
@@ -29,25 +30,34 @@ public:
     bool CastSpell(int spellId, uint64_t targetGuid = 0, int unknownIntArg1 = 0, char unknownCharArg = 0);
 
     // Function to read the spellbook from game memory
-    std::vector<uint32_t> ReadSpellbook();
-
-    // Internal WoW data structures
-    struct SpellInfo {
-        uint32_t id;
-        char* name;
-        char* rank;
-        // ... other fields
-    };
+    static std::vector<uint32_t> ReadSpellbook();
 
     // Initialization (if needed in the future)
-    static bool Initialize();
-    static void Shutdown();
+    // static bool Initialize();
+    // static void Shutdown();
     
-    // Main functionality
-    static SpellInfo* GetSpellInfo(uint32_t spellId);
-    static std::vector<SpellInfo*> GetPlayerSpells();
-    static bool CastSpellByID(uint32_t spellId);
-    static bool CastSpellByName(const std::string& spellName);
+    // --- REMOVED Spell Info Methods ---
+    // static SpellInfo GetSpellInfo(uint32_t spellId);
+    // static bool GetSpellInfoRaw(uint32_t spellId, char* outputBuffer);
+    // static std::vector<SpellInfo> GetPlayerSpells(); // Changed to GetSpellbookIDs
+    static std::vector<uint32_t> GetSpellbookIDs(); // Renamed for clarity
+    // --------------------------------
+    
+    // --- NEW ---
+    /**
+     * @brief Retrieves the name of a spell using its ID via direct memory access.
+     * 
+     * Reads the spell database information directly from game memory based on reversed offsets.
+     * Currently does NOT handle compressed spell records.
+     * 
+     * @param spellId The ID of the spell.
+     * @return The name of the spell, or an empty string/error indicator if not found or an error occurs.
+     */
+    static std::string GetSpellNameByID(uint32_t spellId);
+    // ---------
+    
+    // REMOVED: static bool CastSpellByID(uint32_t spellId);
+    // REMOVED: static bool CastSpellByName(const std::string& spellName);
 
     // Cooldown Checks
     /**
@@ -76,6 +86,6 @@ public:
     // Should be called once during initialization.
     static void PatchCooldownBug_Final();
 
-private:
-    static bool m_initialized;
+// private:
+    // static bool m_initialized; // Uncomment if Initialize/Shutdown are used
 };
