@@ -114,19 +114,4 @@ public:
 
     // Returns the underlying pointer to the actual game object manager (declaration added)
     ObjectManagerActual* GetInternalObjectManagerPtr() const;
-
-// Removed duplicate/old private members and static declarations below:
-// private:
-//    void EnumerateVisibleObjects(); // Not implemented
-//    void ReadObjectDescriptors(std::shared_ptr<WowObject> obj); // Not implemented
-//    bool m_fullyInitialized = false; // Duplicate
-//    std::map<WGUID, std::shared_ptr<WowObject>> m_objectCache; // Duplicate
-//    WGUID m_localPlayerGuid = WGUID(0); // Duplicate and invalid initializer
-//    std::mutex m_cacheMutex; // Duplicate
-//
-//    // Helper for GetLocalPlayer to call GetObjectByGUID without re-locking
-//    std::shared_ptr<WowObject> GetObjectByGUID_locked(WGUID guid); // Duplicate
-//
-//    // Static function pointers
-//    static EnumerateVisibleObjectsFn m_enumerateVisibleObjectsFn; // Duplicate and incorrect
 }; 

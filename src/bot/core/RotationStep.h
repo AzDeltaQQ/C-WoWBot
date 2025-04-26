@@ -2,28 +2,24 @@
 
 #include <cstdint>
 #include <string>
-#include <vector> // Include vector here for convenience if needed later
+#include <vector>
 
 struct RotationStep {
     uint32_t spellId = 0;
-    std::string spellName; // Keep name for potential future use/debugging
+    std::string spellName;
     bool triggersGCD = true;
 
-    // --- New Conditions ---
-    bool requiresTarget = true;      // Does the spell need an active target?
-    float castRange = 30.0f;         // Max range to attempt casting (adjust default as needed)
+    bool requiresTarget = true;
+    float castRange = 30.0f;
     float minPlayerHealthPercent = 0.0f;
     float maxPlayerHealthPercent = 100.0f;
     float minTargetHealthPercent = 0.0f;
     float maxTargetHealthPercent = 100.0f;
-    float minPlayerManaPercent = 0.0f; // Or resource
+    float minPlayerManaPercent = 0.0f;
     float maxPlayerManaPercent = 100.0f;
-    // ----------------------
 
-    // Default constructor
     RotationStep() = default;
 
-    // Parameterized constructor (Update to include new fields with defaults)
     RotationStep(uint32_t id, std::string name, bool gcd, 
                  bool reqTarget = true, float range = 30.0f, 
                  float minPlayerHp = 0.0f, float maxPlayerHp = 100.0f,
@@ -40,6 +36,4 @@ struct RotationStep {
           maxTargetHealthPercent(maxTargetHp),
           minPlayerManaPercent(minPlayerMp),
           maxPlayerManaPercent(maxPlayerMp) {}
-
-    // Add other conditions later if needed (target health, mana %, etc.)
-}; 
+};

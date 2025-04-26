@@ -171,7 +171,6 @@ int __cdecl ObjectManager::EnumObjectsCallback(uint32_t guid_low, uint32_t guid_
 void ObjectManager::Update() {
     // Don't try to update if not fully initialized
     if (!IsInitialized()) {
-        // LogMessage("ObjectManager::Update skipped: Not fully initialized yet.\n"); // Can be noisy
         return;
     }
     

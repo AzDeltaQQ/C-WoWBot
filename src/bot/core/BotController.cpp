@@ -113,7 +113,6 @@ void BotController::start() {
 
 void BotController::stop() {
     if (m_currentState != State::RUNNING) {
-        // LogMessage("BotController: Stop requested but not running."); // Maybe too noisy
         return; 
     }
 
@@ -122,8 +121,6 @@ void BotController::stop() {
     
     if (m_currentEngine) {
         m_currentEngine->stop(); // Signal engine thread to stop
-        // Consider joining the thread here if the engine uses one
-        // m_currentEngine.reset(); // Optional: destroy engine instance on stop
          LogMessage("BotController: Stop signal sent to engine.");
     }
     
@@ -142,10 +139,6 @@ void BotController::setEngine(EngineType type) {
     m_currentEngine.reset(); // Destroy previous engine instance
     m_currentEngineType = type;
 
-    // Pre-create engine instance (optional, could also be done in start())
-    // if (m_currentEngineType == EngineType::GRINDING) {
-    //     m_currentEngine = std::make_unique<GrindingEngine>(m_objectManager, m_spellManager, m_pathManager.get());
-    // }
     LogMessage("BotController: Engine type set.");
 }
 
@@ -172,7 +165,6 @@ void BotController::startPathRecording(int intervalMs) {
 
 void BotController::stopPathRecording() {
     if (m_currentState != State::PATH_RECORDING) {
-        // LogMessage("BotController: Stop path recording requested but not recording."); // Maybe too noisy
         return;
     }
      if (m_pathRecorder) {
@@ -261,10 +253,7 @@ std::string BotController::getCurrentPathName() const {
 
 BotController::State BotController::getCurrentState() const {
     // If engine exists and says it's stopped running (e.g., completed task or error), update state
-    // This prevents the GUI showing RUNNING if the engine thread terminated itself.
     if (m_currentState == State::RUNNING && m_currentEngine && !m_currentEngine->isRunning()) {
-       // Potentially log this state change
-       // LogMessage("BotController: Engine stopped unexpectedly. Updating state to IDLE.");
        const_cast<BotController*>(this)->m_currentState = State::IDLE;
     }
      // Same for recorder?
@@ -394,9 +383,6 @@ bool BotController::loadRotationByName(const std::string& name) {
                         // Check if we just finished an object INSIDE the main array (level is back to 0)
                         if (braceLevel == 0 && !currentObject.str().empty()) { // Finished an object, ensure stream wasn't just cleared
                             std::string objStr = currentObject.str();
-                            // --- Add Debug Logging ---
-                            LogStream ssDebugParse; ssDebugParse << "DEBUG JSON PARSE: Raw object string: [" << objStr << "]"; LogMessage(ssDebugParse.str());
-                            // --- End Debug Logging ---
                             
                             // Initialize with defaults
                             RotationStep currentStep;
@@ -447,9 +433,6 @@ bool BotController::loadRotationByName(const std::string& name) {
                                 }
                                 
                                 // --- Assign based on key (Updated) --- 
-                                // +++ Add Key/Value Log +++
-                                LogStream ssKVLog; ssKVLog << "DEBUG JSON PARSE KV: Key='" << key << "', Raw Value='" << valueStr << "'"; LogMessage(ssKVLog.str());
-                                // ++++++++++++++++++++++++
                                 try {
                                     if (key == "spellId") {
                                         currentStep.spellId = std::stoul(valueStr);
@@ -485,9 +468,6 @@ bool BotController::loadRotationByName(const std::string& name) {
                                 if (currentPos == std::string::npos) break;
                             }
                             // Add the parsed step
-                            // --- Add Debug Logging ---
-                            LogStream ssDebugStep; ssDebugStep << "DEBUG JSON PARSE: Parsed Step -> ID: " << currentStep.spellId << ", Name: '" << currentStep.spellName << "'"; LogMessage(ssDebugStep.str());
-                            // --- End Debug Logging ---
                             loadedRotation.push_back(currentStep);
                         } // End object parsing
                     } else if (braceLevel > 0 && !std::isspace(c)) { // Append other non-brace, non-whitespace characters ONLY if we are inside braces (level > 0)
@@ -557,7 +537,6 @@ void BotController::run() {
                 LogStream ssTargetReq; ssTargetReq << "BotController: Processing target request for GUID 0x" << std::hex << requestedGuid;
                 LogMessage(ssTargetReq.str());
                 TargetUnitByGuid(requestedGuid); // Call from main thread
-                // REMOVED: std::this_thread::sleep_for(std::chrono::milliseconds(50)); 
             }
             // --- END Target Request --- 
 

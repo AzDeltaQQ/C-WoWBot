@@ -95,7 +95,7 @@ std::string WowObject::ReadNameFromVTable() {
         // or just limit length and catch exceptions.
         size_t count = 0;
         constexpr size_t MAX_NAME_LEN = 100; 
-        while(count < MAX_NAME_LEN) {
+        while(count < static_cast<size_t>(MAX_NAME_LEN)) {
             char c = MemoryReader::Read<char>(currentAddr + count);
             if (c == '\0') break;
             nameStr += c;
@@ -118,7 +118,7 @@ void WowObject::UpdateDynamicData() {
     // --- Throttling ---
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     // Allow update if never updated, or enough time passed
-    if (m_lastUpdateTime != 0 && now_ms < (m_lastUpdateTime + 100LL)) { // 100ms throttle (use LL for literal type match)
+    if (m_lastUpdateTime != 0 && static_cast<uint64_t>(now_ms) < (m_lastUpdateTime + 100LL)) { // 100ms throttle (use LL for literal type match)
         return; 
     }
 
@@ -135,7 +135,6 @@ void WowObject::UpdateDynamicData() {
         m_cachedRotation = MemoryReader::Read<float>(baseAddr + OBJECT_ROTATION_OFFSET);
         
         // Potentially update Scale here too if needed, maybe less frequently
-        // m_cachedScale = MemoryReader::Read<float>(baseAddr + ...); 
     } catch (...) {
         // Handle potential exceptions during memory read
         m_cachedPosition = {0,0,0};

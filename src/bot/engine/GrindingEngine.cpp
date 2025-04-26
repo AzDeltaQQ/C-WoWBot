@@ -8,7 +8,6 @@
 #include "../core/BotController.h" // Include BotController
 #include "../pathing/PathManager.h" // Need full definition
 #include "../core/MovementController.h" // Include for movement
-// #include "../core/MovementController.h" // Assuming this is not needed for now
 
 #include <thread> // Include for std::thread
 #include <chrono> // For sleep
@@ -57,17 +56,6 @@ void GrindingEngine::run() {
     LogMessage("GrindingEngine: Run loop started.");
     while (!m_stopRequested) {
         try {
-             // Update ObjectManager cache once per loop iteration -> REMOVED (MUST BE CALLED FROM MAIN THREAD)
-             /*
-             if (m_objectManager) { 
-                 m_objectManager->Update(); 
-             } else {
-                 LogMessage("GrindingEngine Error: ObjectManager is null in run() loop. Stopping.");
-                 m_grindState = GrindState::ERROR_STATE; 
-                 // Maybe directly call stop() or break here?
-             }
-             */
-
              updateState(); // Execute state machine logic
         } catch (const std::exception& e) {
              LogStream ssErr;
@@ -88,17 +76,6 @@ void GrindingEngine::run() {
 
 // Central state machine logic
 void GrindingEngine::updateState() {
-    // Ensure ObjectManager's cache is up-to-date before state logic -> MOVED TO run() loop
-    /*
-    if (m_objectManager) { 
-        m_objectManager->Update(); 
-    } else {
-        LogMessage("GrindingEngine Error: ObjectManager is null in updateState.");
-        m_grindState = GrindState::ERROR_STATE;
-        return;
-    }
-    */
-
     if (!m_objectManager || !m_botController || !m_spellManager ) { // Check SpellManager too
          LogMessage("GrindingEngine Error: Core components missing.");
          m_grindState = GrindState::ERROR_STATE;
@@ -162,14 +139,6 @@ void GrindingEngine::updateState() {
                 selectBestTarget(); // Check for new targets while pathing (request if found)
             }
             break;
-
-        // FINDING_TARGET and MOVING_TO_TARGET are effectively handled by PATHING/COMBAT checks now
-        // case GrindState::FINDING_TARGET: 
-        //     handleFindingTarget();
-        //     break;
-        // case GrindState::MOVING_TO_TARGET:
-        //      handleMovingToTarget();
-        //      break;
 
         case GrindState::COMBAT:
             handleCombat(); // Will transition back to CHECK_STATE if target lost/dies
@@ -269,17 +238,8 @@ void GrindingEngine::handlePathing() {
 
     } else {
         // Not close enough, need to move towards targetPoint
-        // LogStream ssMove; ssMove << "GrindingEngine handlePathing: Moving towards point " << m_currentPathIndex 
-        //                           << " (" << targetPoint.x << ", " << targetPoint.y << ", " << targetPoint.z << ")"
-        //                           << ", DistSq: " << distanceSq;
-        // LogMessage(ssMove.str());
-
-        // **** MOVEMENT LOGIC NEEDED HERE ****
         // Use MovementController to move towards the target point
         MovementController::GetInstance().ClickToMove(targetPoint, playerPos);
-
-        // Placeholder sleep until movement implemented -> REMOVED
-         // std::this_thread::sleep_for(std::chrono::milliseconds(100)); 
     }
 }
 
@@ -356,8 +316,7 @@ bool GrindingEngine::selectBestTarget() {
         }
         // --- End Hostility Check ---
 
-        // TODO: Add proper hostility check here (e.g., unit->CanAttack(player) or faction check) - Kept TODO as flag check is heuristic
-        // For now, attacking any living non-player unit in range that passes the flag check
+        // TODO: Add proper hostility check here (e.g., unit->CanAttack(player) or faction check)
 
         try {
             // Read target position directly
@@ -401,34 +360,6 @@ bool GrindingEngine::selectBestTarget() {
         // We also cannot store the pointer/GUID here, as the main thread handles actual targeting.
         // Return false because targeting is requested, not confirmed.
         return false; 
-        
-        /* --- OLD LOGIC REMOVED ---
-        // Call the targeting function (Address 0x00524BF0)
-        LogMessage("GrindingEngine selectBestTarget: >>> Calling TargetUnitByGuid NOW <<< ");
-        TargetUnitByGuid(targetGuid); 
-        LogMessage("GrindingEngine selectBestTarget: <<< TargetUnitByGuid call returned >>>");
-        
-        // Short delay to allow game state update
-        std::this_thread::sleep_for(std::chrono::milliseconds(50)); 
-
-        // Verify target was set
-        uint64_t actualTargetGuid = m_objectManager->GetCurrentTargetGUID();
-        if (actualTargetGuid == targetGuid) {
-            LogMessage("GrindingEngine selectBestTarget: Target set successfully in game.");
-            // Store the pointer and GUID
-            m_targetUnitPtr = closestUnit; 
-            m_currentTargetGuid = targetGuid;
-            m_lastFailedTargetGuid = 0; // Clear last failed target on success
-            return true;
-        } else {
-             LogStream ssFail; ssFail << "GrindingEngine Warning: TargetUnitByGuid failed or target changed. Expected 0x" << std::hex << targetGuid << " but got 0x" << actualTargetGuid;
-             LogMessage(ssFail.str());
-             m_targetUnitPtr = nullptr;
-             m_currentTargetGuid = 0;
-             m_lastFailedTargetGuid = targetGuid; // Remember this GUID failed
-             return false;
-        }
-        */
     }
 
     // No suitable target found
@@ -436,24 +367,13 @@ bool GrindingEngine::selectBestTarget() {
     return false; 
 }
 
+// Placeholder states, logic merged into main state machine
 void GrindingEngine::handleFindingTarget() {
-    // This state might be simplified and merged into CHECK_STATE
-    if (selectBestTarget()) {
-        m_grindState = GrindState::COMBAT; // Or MOVING_TO_TARGET if range check needed first
-    } else {
-        m_grindState = GrindState::PATHING; // No target, go back to pathing
-    }
+    m_grindState = GrindState::CHECK_STATE;
 }
 
 void GrindingEngine::handleMovingToTarget() {
-     // TODO: If target selected but out of range/LOS
-     // - Get target position
-     // - Use ClickToMove/movement towards target
-     // - Check distance/LOS periodically
-     // - If in range, switch to COMBAT
-     // - If target lost/dies, switch back to CHECK_STATE
-     LogMessage("GrindingEngine: Moving to target (Not Implemented).");
-     m_grindState = GrindState::COMBAT; // Placeholder: Assume in range for now
+    m_grindState = GrindState::COMBAT; // Assume in range for now
 }
 
 void GrindingEngine::handleCombat() {
@@ -661,8 +581,6 @@ bool GrindingEngine::checkRotationCondition(const RotationStep& step) {
     if (m_spellManager) { // Ensure SpellManager is valid
         int cooldownMs = m_spellManager->GetSpellCooldownMs(step.spellId);
         if (cooldownMs > 0) {
-            // Optional: Log why the condition failed (cooldown active)
-            // LogStream ssCD; ssCD << "GrindingEngine CondCheck: Failed - Spell " << step.spellId << " on cooldown for " << cooldownMs << "ms"; LogMessage(ssCD.str());
             return false; // Spell is on cooldown or GCD
         } else if (cooldownMs < 0) {
             // Handle error case from GetSpellCooldownMs
@@ -683,7 +601,7 @@ void GrindingEngine::handleRecovering() {
     // - Use food/drink items (requires inventory/item interaction logic)
     // - Wait until recovered
     // - Transition back to CHECK_STATE when done
-    LogMessage("GrindingEngine: Recovering (Not Implemented).");
-    std::this_thread::sleep_for(std::chrono::seconds(5)); // Placeholder wait
+    LogMessage("GrindingEngine: Recovering (Not Implemented). Will transition back to check state.");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Short delay before checking again
     m_grindState = GrindState::CHECK_STATE;
 } 

@@ -68,13 +68,12 @@ bool MovementController::ClickToMove(const Vector3& targetPos, const Vector3& pl
         MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::Y_OFFSET, targetPos.x); // Write Standard X to CTM Y (+0x90)
         MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::Z_OFFSET, targetPos.z); // Write Standard Z to CTM Z (+0x94)
 
-        // --- NEW: Write Player Start Position (Standard X, Y, Z order) ---
+        // --- Write Player Start Position (Standard X, Y, Z order) ---
         MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::START_X_OFFSET, playerPos.x); // +0x80
         MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::START_Y_OFFSET, playerPos.y); // +0x84
         MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::START_Z_OFFSET, playerPos.z); // +0x88
-        // ------------------------------------------------------------------
 
-        // 5. Clear the GUID in CTM structure - RE-ENABLED
+        // 5. Clear the GUID in CTM structure
         MemoryWriter::WriteMemory<uint64_t>(BASE + CTMOffsets::GUID_OFFSET, 0); // +0x20
         
         // 6. Set the action type in CTM structure (Action 4)
@@ -98,16 +97,9 @@ bool MovementController::ClickToMove(const Vector3& targetPos, const Vector3& pl
 void MovementController::Stop() {
     LogMessage("MovementController: Issuing Stop() command...");
     try {
-        // 1. Get Player Position (Need ObjectManager and WowPlayer for this)
-        //    We ideally need access to the current player position without causing 
-        //    circular dependencies or passing too much around. 
-        //    For now, we'll READ it directly if possible, but this is fragile.
-        //    A better solution might involve BotController providing the position.
         Vector3 currentPos = {0,0,0};
         
-        // THIS IS A HACK - REQUIRES ACCESS TO OBJECT MANAGER DIRECTLY
-        // Replace with a cleaner way to get player pos if possible
-        // #include "../game/objectmanager.h" // TEMPORARY INCLUDE <-- REMOVED FROM HERE
+        // Get player position - REQUIRES ACCESS TO OBJECT MANAGER DIRECTLY
         ObjectManager* objMgr = ObjectManager::GetInstance();
         if (objMgr && objMgr->IsInitialized()) {
             auto player = objMgr->GetLocalPlayer();
@@ -133,7 +125,7 @@ void MovementController::Stop() {
             return;
         }
         
-        // 2. Write CTM Action 1 (Face Target/Stop) with current position
+        // Write CTM Action 1 (Face Target/Stop) with current position
         const uintptr_t BASE = CTMOffsets::BASE_ADDR;
         
         // Initialize base floats (same as ClickToMove)
@@ -187,9 +179,9 @@ void MovementController::FaceTarget(uint64_t targetGuid) {
     }
     
     try {
-        // 1. Get Player Position (Same HACK as Stop() - needs refinement)
+        // Get Player Position (Needs refinement)
         Vector3 currentPos = {0,0,0};
-        ObjectManager* objMgr = ObjectManager::GetInstance(); // Assumes include is at top
+        ObjectManager* objMgr = ObjectManager::GetInstance();
         if (objMgr && objMgr->IsInitialized()) {
             auto player = objMgr->GetLocalPlayer();
             if (player) {
@@ -212,7 +204,7 @@ void MovementController::FaceTarget(uint64_t targetGuid) {
             return;
         }
         
-        // 2. Write CTM Action 1 (Face Target) with target GUID and current position
+        // Write CTM Action 1 (Face Target) with target GUID and current position
         const uintptr_t BASE = CTMOffsets::BASE_ADDR;
         
         // Initialize base floats 
@@ -257,43 +249,79 @@ void MovementController::FaceTarget(uint64_t targetGuid) {
     }
 }
 
-// CTM via Game Function Call (If memory writing fails or is unstable)
-// void MovementController::ClickToMoveFunc(float x, float y, float z) {
-//     if (!m_handleClickToMoveFunc) {
-//         LogMessage("MovementController Error: Click Handler Function not initialized.");
-//         return;
-//     }
+// CTM via Direct Memory Write for Right Clicking
+void MovementController::RightClickAt(const Vector3& targetPos) {
+    LogStream ssLog; ssLog << "MovementController: Issuing RightClickAt() command for Target: " 
+                           << targetPos.x << ", " << targetPos.y << ", " << targetPos.z;
+    LogMessage(ssLog.str());
     
-//     // Prepare arguments (Placeholder structure - NEEDS REVERSING)
-//     struct ClickData {
-//         uint64_t guid; // Target GUID (0 for terrain)
-//         float targetX, targetY, targetZ; // Target coordinates
-//         // ... other unknown fields ...
-//         float startX, startY, startZ; // Start position (may not be needed for func)
-//         uint32_t action; // CTM Action type
-//         // ... potentially more fields ...
-//     } clickData;
+    try {
+        // 1. Get Player Position (Same HACK as Stop()/FaceTarget() - needs refinement)
+        Vector3 currentPos = {0,0,0};
+        ObjectManager* objMgr = ObjectManager::GetInstance(); // Assumes include is at top
+        if (objMgr && objMgr->IsInitialized()) {
+            auto player = objMgr->GetLocalPlayer();
+            if (player) {
+                void* playerPtr = player->GetPointer();
+                if (playerPtr) {
+                    uintptr_t baseAddr = reinterpret_cast<uintptr_t>(playerPtr);
+                    constexpr DWORD OBJECT_POS_X_OFFSET = 0x79C;
+                    constexpr DWORD OBJECT_POS_Y_OFFSET = 0x798;
+                    constexpr DWORD OBJECT_POS_Z_OFFSET = 0x7A0;
+                    try {
+                         currentPos.x = MemoryReader::Read<float>(baseAddr + OBJECT_POS_X_OFFSET);
+                         currentPos.y = MemoryReader::Read<float>(baseAddr + OBJECT_POS_Y_OFFSET);
+                         currentPos.z = MemoryReader::Read<float>(baseAddr + OBJECT_POS_Z_OFFSET);
+                    } catch (...) { /* Failed to read pos */ }
+                }
+            }
+        }
+        if (currentPos.x == 0.0f && currentPos.y == 0.0f) { 
+            LogMessage("MovementController RightClickAt(): WARNING - Could not get player position. Right click might fail.");
+            return;
+        }
 
-//     // Populate the struct (adjust based on actual function signature)
-//     clickData.guid = 0; // Click on terrain
-//     clickData.targetX = x;
-//     clickData.targetY = y;
-//     clickData.targetZ = z;
-//     clickData.action = 4; // Example action type
-    
-//     // // Get player position (if needed by the function)
-//     // GetPlayerPosition(&clickData.startX, &clickData.startY, &clickData.startZ); // Example
+        // 2. Write CTM Action 6 (Interact Target) 
+        const uintptr_t BASE = CTMOffsets::BASE_ADDR;
+        
+        // Initialize base floats
+        MemoryWriter::WriteMemory<float>(BASE + 0x0, 6.087f);      
+        MemoryWriter::WriteMemory<float>(BASE + 0x4, 3.1415927f);  
+        MemoryWriter::WriteMemory<float>(BASE + 0x8, 0.0f);        // Interaction distance for right-click?
+        MemoryWriter::WriteMemory<float>(BASE + 0xC, 0.0f);        
+        
+        // Reset progress fields
+        MemoryWriter::WriteMemory<float>(BASE - 0x8, 0.0f);     
+        MemoryWriter::WriteMemory<uint32_t>(BASE - 0x4, 0);     
+        MemoryWriter::WriteMemory<uint32_t>(BASE + 0x28, 0);    
 
-//     try {
-//         LogMessage("MovementController: Calling ClickToMove function...");
-//         // Call the function (adjust arguments as needed)
-//         // Example: m_handleClickToMoveFunc(&clickData);
-//         // Example: m_handleClickToMoveFunc(clickData.guid, clickData.targetX, ...);
-//         LogMessage("MovementController: ClickToMove function call returned.");
-//     } catch (const std::exception& e) {
-//         LogMessage("MovementController Error: Exception calling ClickToMove function");
-//         // Log e.what()
-//     } catch (...) {
-//         LogMessage("MovementController Error: Unknown exception calling ClickToMove function");
-//     }
-// } 
+        // Write Timestamp
+        auto now = std::chrono::system_clock::now();
+        auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+        MemoryWriter::WriteMemory<uint32_t>(BASE + 0x18, static_cast<uint32_t>(millis)); 
+        
+        // Write Target Coordinates (where to right-click)
+        MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::X_OFFSET, targetPos.y); // CTM X = Target Y
+        MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::Y_OFFSET, targetPos.x); // CTM Y = Target X
+        MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::Z_OFFSET, targetPos.z); // CTM Z = Target Z
+
+        // Write Player Start Position (current position)
+        MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::START_X_OFFSET, currentPos.x);
+        MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::START_Y_OFFSET, currentPos.y);
+        MemoryWriter::WriteMemory<float>(BASE + CTMOffsets::START_Z_OFFSET, currentPos.z);
+
+        // Clear the GUID (since we are clicking a position, not a unit)
+        MemoryWriter::WriteMemory<uint64_t>(BASE + CTMOffsets::GUID_OFFSET, 0); 
+        
+        // Set the action type to 6 (Interact Target? Need to confirm this is correct for right-click)
+        const uint32_t ACTION_INTERACT = 6; 
+        MemoryWriter::WriteMemory<uint32_t>(BASE + CTMOffsets::ACTION_OFFSET, ACTION_INTERACT); 
+
+        LogMessage("MovementController: Right Click CTM action (6) written.");
+
+    } catch (const std::exception& e) {
+        LogStream ssErr; ssErr << "MovementController RightClickAt() EXCEPTION: " << e.what(); LogMessage(ssErr.str());
+    } catch (...) {
+        LogMessage("MovementController RightClickAt(): Unknown exception.");
+    }
+}

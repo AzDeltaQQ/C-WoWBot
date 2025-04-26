@@ -25,10 +25,6 @@ namespace GUI {
     static int selected_rotation_index = -1;
     static std::string loaded_rotation_name = "";
 
-    // Temporary state for the UI elements - REMOVED
-    // static int current_engine_index = 0; 
-    // static bool is_bot_running = false;
-
     void render_bot_tab(BotController* botController) { // Updated signature
         if (!botController) {
             ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "BotController not initialized!");
@@ -104,7 +100,7 @@ namespace GUI {
         ImGui::PopItemWidth();
         ImGui::SameLine();
         if (ImGui::Button("Load##LoadPathButton")) {
-            if (selected_path_index >= 0 && selected_path_index < available_paths.size()) {
+            if (selected_path_index >= 0 && static_cast<size_t>(selected_path_index) < available_paths.size()) {
                 const std::string& nameToLoad = available_paths[selected_path_index];
                 if (botController->loadPathByName(nameToLoad)) {
                     loaded_path_name = nameToLoad; // Update displayed loaded path on success
@@ -158,7 +154,7 @@ namespace GUI {
         ImGui::PopItemWidth();
         ImGui::SameLine();
         if (ImGui::Button("Load##LoadRotationButton")) {
-            if (selected_rotation_index >= 0 && selected_rotation_index < available_rotations.size()) {
+            if (selected_rotation_index >= 0 && static_cast<size_t>(selected_rotation_index) < available_rotations.size()) {
                 const std::string& nameToLoad = available_rotations[selected_rotation_index];
                 // Assumes BotController has this method
                 if (botController->loadRotationByName(nameToLoad)) { 

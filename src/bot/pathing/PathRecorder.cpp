@@ -18,15 +18,10 @@ namespace {
     T ReadMemorySafe(uintptr_t address) {
         if (address == 0) return T{}; // Check null address
         try {
-            // Basic check if address looks somewhat valid (optional)
-            // if (IsBadReadPtr((const void*)address, sizeof(T))) { return T{}; }
             return *reinterpret_cast<T*>(address);
         } catch (const std::exception& /*e*/) {
-             // Optionally log the exception
-             // LogMessageV("ReadMemorySafe Exception: %s at 0x%p", e.what(), address);
              return T{}; // Return default value on memory access error
         } catch (...) {
-             // LogMessageV("ReadMemorySafe Unknown Exception at 0x%p", address);
              return T{}; // Catch any other exceptions
         }
     }
@@ -113,8 +108,6 @@ bool PathRecorder::isRecording() const {
 }
 
 const std::vector<Vector3>& PathRecorder::getRecordedPath() const {
-    // This might be less useful now that the final path is pushed on stop
-    // Maybe return m_pathManager.getPath() instead, or keep this for live preview?
     return m_recordedPath; 
 }
 
@@ -176,11 +169,6 @@ Vector3 PathRecorder::getCurrentPlayerPosition() {
         directPos.y = ReadMemorySafe<float>(baseAddr + OBJECT_POS_Y_OFFSET);
         directPos.z = ReadMemorySafe<float>(baseAddr + OBJECT_POS_Z_OFFSET);
 
-        // Log the directly read position (can be commented out later)
-        // char msg[100];
-        // snprintf(msg, sizeof(msg), "PathRecorder: DIRECTLY READ player pos (%.2f, %.2f, %.2f)", directPos.x, directPos.y, directPos.z);
-        // LogMessage(msg); 
-        
         return directPos;
         // --------------------------
 

@@ -14,7 +14,7 @@
 
 // Forward declarations
 class PathManager;
-class MovementController; // Uncommented and needed
+class MovementController;
 
 class GrindingEngine {
 public:
@@ -64,10 +64,6 @@ private:
     ObjectManager* m_objectManager = nullptr;
     // Non-owning pointer to the SpellManager (Needs to be passed or accessed via BotController)
     SpellManager* m_spellManager = nullptr;
-    // Removed individual manager pointers:
-    // ObjectManager* m_objectManager = nullptr;
-    // PathManager* m_pathManager = nullptr;
-    // MovementController* m_movementController = nullptr;
 
     // State
     std::atomic<bool> m_isRunning = {false};

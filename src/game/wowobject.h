@@ -190,9 +190,6 @@ public:
         // Read flags directly
         uint32_t currentFlags = ReadUnitField<uint32_t>(/*UNIT_FIELD_FLAGS_OFFSET*/ 0x3B * 4); // Use literal offset
 
-        // Log the values read for debugging
-        // LogStream ss; ss << "IsDead Check: Health=" << currentHealth << ", Flags=0x" << std::hex << currentFlags; LogMessage(ss.str());
-
         // Check health first, then specific flags if needed
         return currentHealth <= 0 || (currentFlags & 0x04000000 /*UNIT_FLAG_SKINNABLE*/) != 0;
     }

@@ -10,7 +10,6 @@
 // Forward declarations to reduce header dependencies
 class ObjectManager;
 class SpellManager;
-// class MovementController; // Example
 class GrindingEngine;
 class PathManager;
 class PathRecorder;
@@ -36,7 +35,6 @@ public:
     void initialize(
         ObjectManager* objManager,
         SpellManager* spellManager
-        /* MovementController* moveController */ // Pass other necessary managers
     );
 
     // Main bot control
@@ -88,7 +86,6 @@ private:
     // Core systems (non-owning pointers)
     ObjectManager* m_objectManager = nullptr;
     SpellManager* m_spellManager = nullptr;
-    // MovementController* m_movementController = nullptr;
 
     // Bot components (owned or managed)
     std::unique_ptr<PathManager> m_pathManager;
@@ -107,9 +104,6 @@ private:
     std::string m_currentRotationName;
     std::string m_rotationsDirectory; // Store path
     // --------------------------
-
-    // Thread for the engine's main loop (if applicable)
-    // std::thread m_engineThread;
 
     // Private helper methods
     void runGrindingEngine(); // Example task for the thread

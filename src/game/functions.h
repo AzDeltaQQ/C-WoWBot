@@ -9,7 +9,6 @@
 // ClickToMove (CTM) - Higher Level Handlers
 // Signature defined in MovementController.h (HandleTerrainClickFn)
 const DWORD OFF_HandleTerrainClick = 0x00727400; // Address for CORE CTM function (handlePlayerClickToMove)
-// const DWORD OFF_ClickToMove = 0x704CD0; // Lower-level CTM - Not using currently
 
 // CastLocalPlayerSpell Function
 // Reverting to 4-argument signature based on disassembly

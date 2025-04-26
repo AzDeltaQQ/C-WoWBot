@@ -12,8 +12,6 @@
 #include <windows.h> // For GetTickCount
 #include <fstream> // Added for rotation save/load later
 #include <filesystem> // For directory creation
-// #include <shlobj.h> // Not strictly needed if using GetDllDirectory
-// #include <KnownFolders.h> // Not strictly needed if using GetDllDirectory
 #include "../bot/core/RotationStep.h" // Include the dedicated header
 
 // Helper function to get the directory where the DLL is running

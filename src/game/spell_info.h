@@ -6,8 +6,6 @@
 // Simplified structure for spell IDs
 struct SpellInfo {
     uint32_t ID = 0;                       // Field 1
-    // REMOVED: All other fields (Category, Name, etc.)
-    // REMOVED: IsValid flag
 };
 
 // REMOVED: constexpr size_t SPELL_DBC_ROW_SIZE = 680;

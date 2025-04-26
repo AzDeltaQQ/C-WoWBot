@@ -472,13 +472,6 @@ int SpellManager::GetPetSpellCooldownMs(int spellId) {
 
 // --- REMOVED GetSpellInfo implementation ---
 
-/**
- * @brief Gets the spell IDs from the player's spellbook.
- *
- * Just calls ReadSpellbook.
- *
- * @return A vector of spell IDs.
- */
 std::vector<uint32_t> SpellManager::GetSpellbookIDs() {
     return ReadSpellbook(); // Simply return the result of ReadSpellbook
 }
@@ -498,65 +491,93 @@ inline WGUID GuidFromUint64(uint64_t guid64) {
 
 bool SpellManager::IsSpellInRange(uint32_t spellId, uint64_t targetGuid, ObjectManager* objManager) {
     if (!objManager) {
-        LogMessage("SpellManager::IsSpellInRange Error: ObjectManager is null.");
-        return false;
+        LogMessage("IsSpellInRange Error: ObjectManager is null.");
+        return false; // Cannot determine range without ObjectManager
     }
 
-    // Use correct methods and shared_ptr
+    // 1. Get Player and Target Objects
     std::shared_ptr<WowPlayer> player = objManager->GetLocalPlayer();
-    std::shared_ptr<WowObject> target = objManager->GetObjectByGUID(GuidFromUint64(targetGuid)); // Use helper and correct method
+    std::shared_ptr<WowObject> targetObj = objManager->GetObjectByGUID(targetGuid);
 
-    if (!player || !target) {
-        // LogMessage("SpellManager::IsSpellInRange: Player or Target not found."); // Can be noisy
+    if (!player) {
+        LogMessage("IsSpellInRange Error: Could not get player object.");
+        return false;
+    }
+    if (!targetObj) {
+        LogMessage("IsSpellInRange Warning: Target object not found (invalid GUID?). Assuming out of range.");
         return false;
     }
 
-    // --- Get Spell Range ---
-    // TODO: Implement proper spell range fetching (e.g., from DBC or a map)
-    // For now, using a placeholder default range, e.g., 30 yards.
-    // We could potentially use the range stored in the RotationStep if we pass it,
-    // but ideally, SpellManager knows the real range.
-    float spellRange = 30.0f; // Placeholder range
-    float minRange = 0.0f; // Placeholder min range (some spells might have one)
+    // 2. Get Spell Range from DBC (Using a simplified placeholder for now)
+    //    TODO: Implement a proper way to read SpellRange.dbc or cache ranges
+    float spellMaxRange = 30.0f; // Placeholder max range (e.g., default attack/spell range)
+    float spellMinRange = 0.0f;  // Placeholder min range
+    
+    // Example of how you might get specific ranges (needs DBC reading)
+    // if (spellId == 123) { spellMaxRange = 40.0f; } // Frostbolt
+    // else if (spellId == 456) { spellMaxRange = 5.0f; } // Melee attack
+    // ... etc ...
 
-    // --- Calculate Distance ---
+    // 3. Read Positions Directly
+    Vector3 playerPos = {0,0,0};
+    Vector3 targetPos = {0,0,0};
+    bool posReadSuccess = true;
     try {
-        // Use GetPosition() from shared_ptr
-        Vector3 playerPos = player->GetPosition();
-        Vector3 targetPos = target->GetPosition();
-
-        // Basic 3D distance (consider X/Y only for ground range if needed)
-        float dx = playerPos.x - targetPos.x;
-        float dy = playerPos.y - targetPos.y;
-        float dz = playerPos.z - targetPos.z; // Include Z for now
-        float distance = std::sqrt(dx*dx + dy*dy + dz*dz);
-
-        // --- Add Combat Reach ---
-        // Add player and target combat reach/hitbox radius for effective range
-        // These are approximations for 3.3.5a
-        float playerCombatReach = 2.5f; // Approx
-        float targetCombatReach = 2.5f; // Approx (adjust based on target size if possible)
-        float effectiveRange = spellRange + playerCombatReach + targetCombatReach;
-        float effectiveMinRange = minRange > 0 ? (minRange + playerCombatReach + targetCombatReach) : 0.0f; // Adjust min range too
-
-        // LogStream ss;
-        // ss << "SpellRange Check: ID=" << spellId << ", Dist=" << distance
-        //    << ", MaxEffRange=" << effectiveRange << ", MinEffRange=" << effectiveMinRange;
-        // LogMessage(ss.str());
-
-        if (distance <= effectiveRange) {
-            if (effectiveMinRange > 0.0f) {
-                return distance >= effectiveMinRange; // Check min range if applicable
+        // Read Player Pos
+        void* playerPtr = player->GetPointer();
+        if (playerPtr) {
+            uintptr_t pBase = reinterpret_cast<uintptr_t>(playerPtr);
+            playerPos.x = MemoryReader::Read<float>(pBase + 0x79C);
+            playerPos.y = MemoryReader::Read<float>(pBase + 0x798);
+            playerPos.z = MemoryReader::Read<float>(pBase + 0x7A0);
+        } else { throw std::runtime_error("Player pointer null"); }
+        
+        // Read Target Pos
+        void* targetPtr = targetObj->GetPointer();
+        if (targetPtr) {
+            uintptr_t tBase = reinterpret_cast<uintptr_t>(targetPtr);
+            // Read GameObject position differently if applicable
+            if (targetObj->GetType() == WowObjectType::OBJECT_GAMEOBJECT) {
+                targetPos.x = MemoryReader::Read<float>(tBase + 0xEC); // GO X
+                targetPos.y = MemoryReader::Read<float>(tBase + 0xE8); // GO Y
+                targetPos.z = MemoryReader::Read<float>(tBase + 0xF0); // GO Z
+            } else { // Assume Unit or other standard object
+                targetPos.x = MemoryReader::Read<float>(tBase + 0x79C); // Unit X
+                targetPos.y = MemoryReader::Read<float>(tBase + 0x798); // Unit Y
+                targetPos.z = MemoryReader::Read<float>(tBase + 0x7A0); // Unit Z
             }
-            return true; // Within max range, no min range constraint
-        }
+        } else { throw std::runtime_error("Target pointer null"); }
 
-    } catch (const std::runtime_error& e) {
-         LogStream ssErr;
-         ssErr << "SpellManager::IsSpellInRange Error reading positions: " << e.what();
-         LogMessage(ssErr.str());
-         return false;
+    } catch(const std::exception& e) { 
+        LogStream ssErr; ssErr << "IsSpellInRange Error: Exception reading positions: " << e.what(); LogMessage(ssErr.str());
+        posReadSuccess = false;
+    } 
+
+    if (!posReadSuccess) {
+        return false; // Cannot determine range if position read failed
     }
 
-    return false; // Out of range
+    // 4. Calculate Distance
+    float dx = playerPos.x - targetPos.x;
+    float dy = playerPos.y - targetPos.y;
+    float dz = playerPos.z - targetPos.z;
+    float distance = std::sqrt(dx*dx + dy*dy + dz*dz);
+
+    // 5. Check Against Spell Range (incorporating combat reach)
+    //    Combat reach values vary by race/model, using placeholders
+    float playerCombatReach = 2.5f; 
+    float targetCombatReach = 2.5f; 
+
+    // Distance check: Actual distance must be <= spell's max range + target's reach
+    //               Actual distance must be >= spell's min range - target's reach (if min range > 0)
+    bool withinMaxRange = distance <= (spellMaxRange + targetCombatReach);
+    bool beyondMinRange = (spellMinRange == 0) || (distance >= (spellMinRange - targetCombatReach));
+
+    // Log range details for debugging
+    // LogStream ssRange; ssRange << "IsSpellInRange: Spell=" << spellId << ", Target=" << std::hex << targetGuid << ", Dist=" << distance 
+    //                             << ", MaxRange=" << spellMaxRange << "(+Reach=" << targetCombatReach << "), MinRange=" << spellMinRange << "(-Reach=" << targetCombatReach << ")"
+    //                             << " | Result: " << (withinMaxRange && beyondMinRange);
+    // LogMessage(ssRange.str());
+
+    return withinMaxRange && beyondMinRange;
 }

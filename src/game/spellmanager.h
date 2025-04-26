@@ -6,7 +6,6 @@
 #include "functions.h" // For CastLocalPlayerSpellFn
 #include "log.h"
 #include <string>
-// REMOVED: #include "spell_info.h" // Will be simplified later
 
 // Forward declare needed classes
 class ObjectManager;
@@ -35,14 +34,7 @@ public:
     // Function to read the spellbook from game memory
     static std::vector<uint32_t> ReadSpellbook();
 
-    // Initialization (if needed in the future)
-    // static bool Initialize();
-    // static void Shutdown();
-    
     // --- REMOVED Spell Info Methods ---
-    // static SpellInfo GetSpellInfo(uint32_t spellId);
-    // static bool GetSpellInfoRaw(uint32_t spellId, char* outputBuffer);
-    // static std::vector<SpellInfo> GetPlayerSpells(); // Changed to GetSpellbookIDs
     static std::vector<uint32_t> GetSpellbookIDs(); // Renamed for clarity
     // --------------------------------
     
@@ -65,14 +57,8 @@ public:
      */
     static std::string GetSpellTooltipByID(uint32_t spellId);
 
-    // Remove or comment out the old GetSpellDescriptionByID and GetSpellTooltipByID
-    // static std::string GetSpellDescriptionByID(uint32_t spellId); // Uses offset 0x2A8 - unreliable
-    // static std::string GetSpellTooltipByID(uint32_t spellId); // Uses offset 0x2EC - usually empty
     // ---------
     
-    // REMOVED: static bool CastSpellByID(uint32_t spellId);
-    // REMOVED: static bool CastSpellByName(const std::string& spellName);
-
     // Cooldown Checks
     /**
      * @brief Gets the remaining cooldown for a player spell in milliseconds.
@@ -110,6 +96,4 @@ public:
      */
     static bool IsSpellInRange(uint32_t spellId, uint64_t targetGuid, ObjectManager* objManager);
 
-// private:
-    // static bool m_initialized; // Uncomment if Initialize/Shutdown are used
 };
