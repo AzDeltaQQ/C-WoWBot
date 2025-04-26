@@ -46,14 +46,25 @@ public:
     // --- NEW ---
     /**
      * @brief Retrieves the name of a spell using its ID via direct memory access.
-     * 
-     * Reads the spell database information directly from game memory based on reversed offsets.
-     * Currently does NOT handle compressed spell records.
-     * 
-     * @param spellId The ID of the spell.
-     * @return The name of the spell, or an empty string/error indicator if not found or an error occurs.
+     * Uses DBC offset 0x220.
      */
     static std::string GetSpellNameByID(uint32_t spellId);
+
+    /**
+     * @brief Retrieves the primary description of a spell using its ID via direct memory access.
+     * Uses DBC offset 0x2A8 (relative to string table base). May contain format codes ($s1 etc).
+     */
+    static std::string GetSpellDescriptionByID(uint32_t spellId);
+
+    /**
+     * @brief Retrieves the tooltip description of a spell using its ID via direct memory access.
+     * Uses DBC offset 0x2EC (relative to string table base). May contain format codes ($s1 etc). May be empty.
+     */
+    static std::string GetSpellTooltipByID(uint32_t spellId);
+
+    // Remove or comment out the old GetSpellDescriptionByID and GetSpellTooltipByID
+    // static std::string GetSpellDescriptionByID(uint32_t spellId); // Uses offset 0x2A8 - unreliable
+    // static std::string GetSpellTooltipByID(uint32_t spellId); // Uses offset 0x2EC - usually empty
     // ---------
     
     // REMOVED: static bool CastSpellByID(uint32_t spellId);

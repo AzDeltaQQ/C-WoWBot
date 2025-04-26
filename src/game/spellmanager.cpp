@@ -34,9 +34,18 @@ namespace { // Anonymous namespace for constants and helpers
     constexpr uint32_t OFFSET_CONTEXT_MIN_ID = 0x10;
     constexpr uint32_t OFFSET_CONTEXT_INDEX_TABLE_PTR = 0x20; // Points to array of pointers to spell records
 
-    // Offsets within the 0x2A8 byte Spell Record
-    constexpr uint32_t OFFSET_RECORD_NAME_PTR = 0x1C0; // char*
-    // Add other offsets later as needed (Rank: 0x1C4, Desc: 0x228, Tooltip: 0x22C, IconID: 0x1B4, PowerType: 0xA4)
+    // Offsets within the Spell Record (Relative to RecordPtr) - FINAL-FINAL VERIFIED
+    constexpr uint32_t OFFSET_DBC_NAME_PTR = 0x220;        // Field 137 (SpellName[0]) - Direct Pointer
+    // constexpr uint32_t OFFSET_DBC_RANK_PTR = 0x264;     // Field 154 (SpellSubtext[0]) - Probably Direct Pointer
+    constexpr uint32_t OFFSET_DBC_DESC_PTR = 0x228;        // Field ??? (~171?) - Direct Pointer to Description string (with format codes)
+    constexpr uint32_t OFFSET_DBC_TOOLTIP_PTR = 0x22C;     // Field ??? (~188?) - Direct Pointer to Tooltip string (with format codes, often NULL/empty)
+    constexpr uint32_t OFFSET_DBC_ICON_ID = 0x218;        // Field 134 (SpellIconID)
+    constexpr uint32_t OFFSET_DBC_POWER_TYPE = 0xA4;         // Field 42 (powerType)
+    // Add other offsets from DBC as needed...
+
+    // REMOVED: Base address for the spell string table - Not needed for direct pointers
+    // constexpr uintptr_t ADDR_SpellStringTableBase = 0x13C155D4; 
+
     // ---------------------------
 
     // --- Memory Reading Helpers ---
@@ -288,23 +297,11 @@ std::string SpellManager::GetSpellNameByID(uint32_t spellId) {
 
         // 5. Check for compression
         uint8_t isCompressed = MemoryReader::Read<uint8_t>(ADDR_CompressionFlag);
-        if (isCompressed) {
-             LogMessage("GetSpellNameByID: Spell record is compressed (not supported).");
-            return "[Compressed Record]";
-        }
+        if (isCompressed) return "[Compressed Record]";
 
         // 6. Get the address where the name pointer is stored within the record
-        // uintptr_t namePtrAddr = recordPtr + OFFSET_RECORD_NAME_PTR; // Original 0x1C0
-        // Test Rank offset
-        // uintptr_t namePtrAddr = recordPtr + 0x1C4;
-        // Test Description offset
-        // uintptr_t namePtrAddr = recordPtr + 0x228;
-        // Test Tooltip offset
-        // uintptr_t namePtrAddr = recordPtr + 0x22C;
-        // Test DBC Name offset (Field 137 -> 0x220)
-        constexpr uint32_t OFFSET_DBC_NAME_PTR = 0x220;
-        uintptr_t namePtrAddr = recordPtr + OFFSET_DBC_NAME_PTR; 
-        ssTrace = LogStream(); ssTrace << "  Address of Ptr within record (Testing DBC Offset 0x220) = 0x" << std::hex << namePtrAddr; LogMessage(ssTrace.str());
+        uintptr_t namePtrAddr = recordPtr + OFFSET_DBC_NAME_PTR; // Ensure this uses 0x220
+        ssTrace = LogStream(); ssTrace << "  Address of Name Ptr within record = 0x" << std::hex << namePtrAddr; LogMessage(ssTrace.str());
 
          // Check if the address *within* the record holding the name pointer is readable
          if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(namePtrAddr), sizeof(char*))) {
@@ -318,6 +315,7 @@ std::string SpellManager::GetSpellNameByID(uint32_t spellId) {
 
 
         // 8. Read the string safely using the helper function
+        // The helper checks pszName validity
         std::string resultName = SafeReadStringHelper(pszName);
         ssTrace = LogStream(); ssTrace << "  SafeReadString Result: \"" << resultName << "\""; LogMessage(ssTrace.str());
         return resultName;
@@ -335,6 +333,88 @@ std::string SpellManager::GetSpellNameByID(uint32_t spellId) {
     }
 }
 // --- End GetSpellNameByID ---
+
+// --- GetSpellDescriptionByID Implementation (Direct Pointer Logic) ---
+std::string SpellManager::GetSpellDescriptionByID(uint32_t spellId) {
+    // LogStream ssTrace; ssTrace << "GetSpellDescriptionByID Enter: SpellID=" << spellId; LogMessage(ssTrace.str());
+    try {
+        // --- Steps 1-4: Get RecordPtr (Simplified) ---
+        constexpr uintptr_t ADDR_MinID = ADDR_SpellDBContextPtr + 0x10;
+        constexpr uintptr_t ADDR_MaxID = ADDR_SpellDBContextPtr + 0x0C;
+        constexpr uintptr_t ADDR_IndexOfTablePtrValue = ADDR_SpellDBContextPtr + 0x20;
+
+        uint32_t minID = MemoryReader::Read<uint32_t>(ADDR_MinID);
+        uint32_t maxID = MemoryReader::Read<uint32_t>(ADDR_MaxID);
+        if (spellId < minID || spellId > maxID) return ""; 
+
+        uintptr_t indexTablePtr = MemoryReader::Read<uintptr_t>(ADDR_IndexOfTablePtrValue);
+        if (indexTablePtr == 0) return "";
+
+        uint32_t index = spellId - minID;
+        uintptr_t pRecordPtrAddr = indexTablePtr + (index * sizeof(uintptr_t));
+        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(pRecordPtrAddr))) return ""; 
+        uintptr_t recordPtr = MemoryReader::Read<uintptr_t>(pRecordPtrAddr);
+        if (recordPtr == 0 || !IsValidReadPtrHelper(reinterpret_cast<const void*>(recordPtr))) return "";
+        
+        uint8_t isCompressed = MemoryReader::Read<uint8_t>(ADDR_CompressionFlag);
+        if (isCompressed) return "[Compressed Record]";
+        // --- End Steps 1-4 ---
+
+        // 5. Get Description Pointer Address
+        uintptr_t descPtrAddr = recordPtr + OFFSET_DBC_DESC_PTR; // Use 0x228
+        // ssTrace = LogStream(); ssTrace << "  Address of Desc Ptr = 0x" << std::hex << descPtrAddr; LogMessage(ssTrace.str());
+        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(descPtrAddr), sizeof(char*))) return "";
+
+        // 6. Read Description Pointer Value
+        char* pszDesc = MemoryReader::Read<char*>(descPtrAddr);
+        // ssTrace = LogStream(); ssTrace << "  Read Desc Ptr Value = 0x" << std::hex << reinterpret_cast<uintptr_t>(pszDesc); LogMessage(ssTrace.str());
+
+        // 7. Read String (Helper checks pointer validity)
+        return SafeReadStringHelper(pszDesc);
+
+    } catch (...) { /* Log error maybe? */ return "[Desc Read Error]"; }
+}
+
+// --- GetSpellTooltipByID Implementation (Direct Pointer Logic) ---
+std::string SpellManager::GetSpellTooltipByID(uint32_t spellId) {
+    // LogStream ssTrace; ssTrace << "GetSpellTooltipByID Enter: SpellID=" << spellId; LogMessage(ssTrace.str());
+    try {
+        // --- Steps 1-4: Get RecordPtr (Simplified) ---
+        constexpr uintptr_t ADDR_MinID = ADDR_SpellDBContextPtr + 0x10;
+        constexpr uintptr_t ADDR_MaxID = ADDR_SpellDBContextPtr + 0x0C;
+        constexpr uintptr_t ADDR_IndexOfTablePtrValue = ADDR_SpellDBContextPtr + 0x20;
+
+        uint32_t minID = MemoryReader::Read<uint32_t>(ADDR_MinID);
+        uint32_t maxID = MemoryReader::Read<uint32_t>(ADDR_MaxID);
+        if (spellId < minID || spellId > maxID) return ""; 
+
+        uintptr_t indexTablePtr = MemoryReader::Read<uintptr_t>(ADDR_IndexOfTablePtrValue);
+        if (indexTablePtr == 0) return "";
+
+        uint32_t index = spellId - minID;
+        uintptr_t pRecordPtrAddr = indexTablePtr + (index * sizeof(uintptr_t));
+        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(pRecordPtrAddr))) return "";
+        uintptr_t recordPtr = MemoryReader::Read<uintptr_t>(pRecordPtrAddr);
+        if (recordPtr == 0 || !IsValidReadPtrHelper(reinterpret_cast<const void*>(recordPtr))) return "";
+
+        uint8_t isCompressed = MemoryReader::Read<uint8_t>(ADDR_CompressionFlag);
+        if (isCompressed) return "[Compressed Record]";
+        // --- End Steps 1-4 ---
+
+        // 5. Get Tooltip Pointer Address
+        uintptr_t tooltipPtrAddr = recordPtr + OFFSET_DBC_TOOLTIP_PTR; // Use 0x22C
+        // ssTrace = LogStream(); ssTrace << "  Address of Tooltip Ptr = 0x" << std::hex << tooltipPtrAddr; LogMessage(ssTrace.str());
+        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(tooltipPtrAddr), sizeof(char*))) return "";
+
+        // 6. Read Tooltip Pointer Value
+        char* pszTooltip = MemoryReader::Read<char*>(tooltipPtrAddr);
+        // ssTrace = LogStream(); ssTrace << "  Read Tooltip Ptr Value = 0x" << std::hex << reinterpret_cast<uintptr_t>(pszTooltip); LogMessage(ssTrace.str());
+
+        // 7. Read String (Helper checks pointer validity)
+        return SafeReadStringHelper(pszTooltip);
+
+    } catch (...) { /* Log error maybe? */ return "[Tooltip Read Error]"; }
+}
 
 // Define the function pointer type for get_spell_cooldown_proxy (0x809000)
 // Ensure DWORD is defined appropriately (e.g., via <windows.h> or manually)

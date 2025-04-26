@@ -66,16 +66,30 @@ void RenderSpellsTab() {
 
     // Display the dumped spellbook if available
     if (spellbook_dumped) {
-        ImGui::BeginChild("SpellbookDisplay", ImVec2(0, 200), true); 
+        ImGui::BeginChild("SpellbookDisplay", ImVec2(0, 300), true); // Increased height
         ImGui::Text("Spellbook Contents (%zu entries):", spellbook_ids.size());
         ImGui::Separator();
-        // Iterate through the spell IDs vector
         for (const uint32_t& spellId : spellbook_ids) { 
-            // Call GetSpellNameByID to get the name
             std::string spellName = SpellManager::GetSpellNameByID(spellId);
+            std::string spellDesc = SpellManager::GetSpellDescriptionByID(spellId);
+            std::string spellTooltip = SpellManager::GetSpellTooltipByID(spellId);
             
-            // Format the output string to include ID and Name
+            // Show ID and Name on one line
             ImGui::Text("ID: %u - Name: %s", spellId, spellName.c_str());
+            
+            // Show Description (if not empty and not an error string)
+            if (!spellDesc.empty() && spellDesc.find("[") == std::string::npos) { 
+                 ImGui::Indent();
+                 ImGui::TextWrapped("Desc: %s", spellDesc.c_str());
+                 ImGui::Unindent();
+            }
+            // Show Tooltip (if not empty and not an error string)
+            if (!spellTooltip.empty() && spellTooltip.find("[") == std::string::npos) {
+                 ImGui::Indent();
+                 ImGui::TextWrapped("Tooltip: %s", spellTooltip.c_str());
+                 ImGui::Unindent();
+            }
+            ImGui::Separator(); // Separate entries
         }
         ImGui::EndChild();
     } else {
