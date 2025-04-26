@@ -79,9 +79,7 @@ private:
     std::shared_ptr<WowUnit> m_targetUnitPtr = nullptr; // Store the pointer too
     int m_currentRotationIndex = 0; // Index for iterating through rotation
     uint64_t m_lastFailedTargetGuid = 0; // Track last GUID that TargetUnitByGuid failed on
-    DWORD m_lastGcdTriggerTime = 0; // Timestamp for GCD tracking
     DWORD m_combatStartTime = 0; // Track combat duration
-    const DWORD GCD_DURATION = 1500; // Milliseconds for GCD
 
     // Pathing state
     int m_currentPathIndex = -1; // -1 indicates no active path segment

@@ -336,20 +336,28 @@ bool GrindingEngine::selectBestTarget() {
         unit->UpdateDynamicData(); // Ensure flags are up-to-date before checking
         uint32_t unitFlags = unit->GetUnitFlags();
 
-        // Check if the unit is generally attackable
-        bool isAttackable = true;
-        if (unitFlags & UNIT_FLAG_NON_ATTACKABLE) isAttackable = false;
-        if (unitFlags & UNIT_FLAG_NOT_ATTACKABLE_1) isAttackable = false; 
-        if (unitFlags & UNIT_FLAG_IMMUNE_PC) isAttackable = false;
+        // Refined check: Skip if friendly (NOT_ATTACKABLE_1) or explicitly non-attackable.
+        // UNIT_FLAG_NOT_ATTACKABLE_1 (0x80) is often set on friendly NPCs.
+        // UNIT_FLAG_NON_ATTACKABLE (0x02) means cannot be attacked at all.
+        bool isFriendly = (unitFlags & UNIT_FLAG_NOT_ATTACKABLE_1) != 0;
+        bool isGenerallyNonAttackable = (unitFlags & UNIT_FLAG_NON_ATTACKABLE) != 0;
+        bool isImmuneToPC = (unitFlags & UNIT_FLAG_IMMUNE_PC) != 0; // Keep this check
 
-        if (!isAttackable) {
-             // LogStream ssSkip; ssSkip << "Skipping non-attackable unit GUID 0x" << std::hex << currentObjGuid << " Flags: 0x" << unitFlags; LogMessage(ssSkip.str());
-            continue; // Skip non-attackable units (friendly NPCs, immune units, etc.)
+        if (isFriendly || isGenerallyNonAttackable || isImmuneToPC) {
+             // Optional: More detailed logging for skipped units
+             LogStream ssSkip; 
+             ssSkip << "Skipping unit GUID 0x" << std::hex << currentObjGuid 
+                    << " Flags: 0x" << unitFlags 
+                    << " (Friendly=" << isFriendly 
+                    << ", NonAttack=" << isGenerallyNonAttackable 
+                    << ", ImmunePC=" << isImmuneToPC << ")"; 
+             // LogMessage(ssSkip.str()); // Uncomment for detailed debugging
+            continue; 
         }
         // --- End Hostility Check ---
 
-        // TODO: Add proper hostility check here (e.g., unit->CanAttack(player) or faction check)
-        // For now, attacking any living non-player unit in range
+        // TODO: Add proper hostility check here (e.g., unit->CanAttack(player) or faction check) - Kept TODO as flag check is heuristic
+        // For now, attacking any living non-player unit in range that passes the flag check
 
         try {
             // Read target position directly
@@ -489,14 +497,7 @@ void GrindingEngine::handleCombat() {
     }
     // --- Target is Alive --- 
 
-    // Check if GCD is active
-    DWORD currentTime = GetTickCount();
-    if (currentTime < m_lastGcdTriggerTime + GCD_DURATION) {
-        return; // Still on GCD
-    }
-
     // --- Re-fetch and Validate Pointer BEFORE Casting --- 
-    // (Seems redundant, but belts and suspenders approach for timing issues)
     std::shared_ptr<WowObject> tempTargetBase_CastCheck = m_objectManager->GetObjectByGUID(gameCurrentTargetGuid);
     m_targetUnitPtr = std::dynamic_pointer_cast<WowUnit>(tempTargetBase_CastCheck); // Update the member pointer here
     if (!m_targetUnitPtr) {
@@ -510,14 +511,6 @@ void GrindingEngine::handleCombat() {
 
     // --- Execute Rotation --- (Will still warn if empty)
     castSpellFromRotation(); 
-
-    // --- Timeout/Stuck Check ---
-    // if (currentTime > m_combatStartTime + 60000) { // e.g., 1 minute timeout
-    //     LogMessage("GrindingEngine Warning: Combat lasted over 60 seconds. Exiting.");
-    //     m_currentTargetGuid = 0; // Drop target
-    //     m_grindState = GrindState::CHECK_STATE;
-    //     // TODO: Blacklist target?
-    // }
 }
 
 void GrindingEngine::castSpellFromRotation() {
@@ -545,26 +538,7 @@ void GrindingEngine::castSpellFromRotation() {
                  // Request the cast via BotController (runs on main thread)
                  m_botController->requestCastSpell(step.spellId);
                  
-                 // We assume the cast will succeed for GCD purposes here.
-                 // A more advanced system could wait for confirmation from the main thread.
-                 if (step.triggersGCD) {
-                     m_lastGcdTriggerTime = GetTickCount();
-                     LogMessage("GrindingEngine: GCD Triggered (assumed after cast request).");
-                 }
                  spellCasted = true; // Mark as 'casted' to proceed in rotation
-                 
-                 /* --- OLD DIRECT CALL REMOVED ---
-                 bool success = m_spellManager->CastSpell(step.spellId, m_currentTargetGuid, 0, 0);
-                 if (success) {
-                    if (step.triggersGCD) {
-                        m_lastGcdTriggerTime = GetTickCount();
-                         LogMessage("GrindingEngine: GCD Triggered.");
-                    }
-                    spellCasted = true; 
-                 } else {
-                     LogMessage("GrindingEngine Warning: CastSpell failed.");
-                 }
-                 */
              } else if (cooldownMs > 0) {
                   // Cooldown active
              } else {
@@ -626,7 +600,7 @@ bool GrindingEngine::checkRotationCondition(const RotationStep& step) {
 
                 float playerCombatReach = 2.5f;
                 float targetCombatReach = 2.5f;
-                float effectiveRange = step.castRange + playerCombatReach + targetCombatReach;
+                float effectiveRange = step.castRange; // Use exact spell range without added reach
                  if (dist > effectiveRange) {
                      // Uncomment the log message to check if range is the issue
                      LogStream ssRange; ssRange << "GrindingEngine CondCheck: Failed - Out of Range. Dist=" << dist << ", MaxEffRange=" << effectiveRange << " (SpellRange=" << step.castRange << ")"; LogMessage(ssRange.str());
@@ -682,6 +656,23 @@ bool GrindingEngine::checkRotationCondition(const RotationStep& step) {
              return false; 
          }
      }
+
+    // --- Final Check: Spell Cooldown/GCD ---
+    if (m_spellManager) { // Ensure SpellManager is valid
+        int cooldownMs = m_spellManager->GetSpellCooldownMs(step.spellId);
+        if (cooldownMs > 0) {
+            // Optional: Log why the condition failed (cooldown active)
+            // LogStream ssCD; ssCD << "GrindingEngine CondCheck: Failed - Spell " << step.spellId << " on cooldown for " << cooldownMs << "ms"; LogMessage(ssCD.str());
+            return false; // Spell is on cooldown or GCD
+        } else if (cooldownMs < 0) {
+            // Handle error case from GetSpellCooldownMs
+            LogStream ssErr; ssErr << "GrindingEngine CondCheck: Error getting cooldown for spell " << step.spellId; LogMessage(ssErr.str());
+            return false; // Treat error as failure
+        }
+    } else {
+        LogMessage("GrindingEngine CondCheck: Failed - SpellManager instance is null.");
+        return false; // Cannot check cooldown if SpellManager is null
+    }
 
      return true; 
 }
