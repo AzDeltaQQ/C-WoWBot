@@ -32,3 +32,19 @@ void ReadSpellbook();
 const std::vector<int>& GetSpellbook();
 
 // Add other non-cooldown related function declarations here if any
+
+// Function to select a target by GUID (Placeholder address: 0x520190)
+// Actual parameters and return type might differ - this is based on limited context.
+// The disassembly suggests it might *do more* than just select.
+// Research or reverse engineer the exact call needed for CLickToMove_SetTarget or similar.
+// UPDATE: Based on disassembly, 0x00524BF0 (handleTargetAcquisition) seems more likely.
+// UPDATE 2: Disassembly hints at __usercall (int@<edi>, __int64), trying __stdcall first.
+// UPDATE 3: Trying __thiscall based on user request.
+// UPDATE 4: Reverting to __cdecl for logging test.
+typedef void(__cdecl* TargetUnitByGuidFn)(uint64_t guid);
+const TargetUnitByGuidFn TargetUnitByGuid = (TargetUnitByGuidFn)0x00524BF0; // Updated Address
+
+// Alternative based on enumVisibleObjects:
+// typedef int (__cdecl *EnumVisibleObjectsFn)(int (__cdecl *callback)(uint64_t, void*), void* filter);
+// const EnumVisibleObjectsFn EnumVisibleObjects = (EnumVisibleObjectsFn)0x005203EE;
+// Need to define the callback function select_nearest_suitable_target separately if using this.

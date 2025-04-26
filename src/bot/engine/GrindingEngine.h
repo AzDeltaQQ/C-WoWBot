@@ -1,21 +1,37 @@
 #pragma once
 
+#include "../core/BotController.h" // Include BotController for state/access
+#include "../../game/ObjectManager.h" // Need ObjectManager
+#include "../../game/SpellManager.h"  // Need SpellManager
+#include "../core/RotationStep.h" // Include RotationStep
+#include <vector>
+#include <string>
 #include <atomic>
-#include <memory> // For std::thread if used
 #include <thread>
+#include <chrono> // For time tracking
+#include <windows.h> // For GetTickCount
+#include <memory>
 
 // Forward declarations
-class ObjectManager;
-class SpellManager;
 class PathManager;
 class MovementController; // Uncommented and needed
-class BotController; // Added forward declaration
-// class MovementController; // If you have a dedicated movement system
 
 class GrindingEngine {
 public:
+    // Define internal states for the Grinding Engine
+    enum class GrindState {
+        IDLE,           // Doing nothing (shouldn't stay here long if started)
+        CHECK_STATE,    // Deciding what to do next (pathing, finding target, combat)
+        PATHING,        // Following the loaded path
+        FINDING_TARGET, // Looking for nearby suitable enemies
+        MOVING_TO_TARGET, // Moving towards the selected target if out of range/LOS
+        COMBAT,         // Actively fighting the target
+        RECOVERING,     // Eating/Drinking/Waiting after combat
+        ERROR_STATE     // An unrecoverable error occurred
+    };
+
     // Constructor now takes BotController and ObjectManager
-    GrindingEngine(BotController* botController, ObjectManager* objectManager);
+    GrindingEngine(BotController* controller, ObjectManager* objectManager);
     ~GrindingEngine();
 
     // Start the grinding logic (potentially in a new thread)
@@ -28,30 +44,47 @@ public:
     bool isRunning() const;
 
 private:
-    // The main loop executed by the engine's thread
-    void runLoop();
+    void run(); // Main loop executed in the thread
+    void updateState(); // State machine logic
 
-    // --- Helper methods for grinding logic --- 
-    // bool findTarget(TargetInfo& outTarget);
-    // bool navigateTo(const Point3D& destination);
-    // bool combatRotation(uint64_t targetGuid);
-    // bool lootTarget(uint64_t targetGuid);
-    // bool followPath();
-    // ------------------------------------------
+    // State-specific handlers
+    void handlePathing();
+    void handleFindingTarget();
+    void handleMovingToTarget();
+    void handleCombat();
+    void handleRecovering();
+
+    bool selectBestTarget(); // Logic to find and target an enemy
+    bool checkRotationCondition(const RotationStep& step); // Check spell conditions
+    void castSpellFromRotation(); // Find and cast next available spell
 
     // Non-owning pointer to the core BotController
     BotController* m_botController = nullptr;
     // Non-owning pointer to the ObjectManager (needed for player position)
     ObjectManager* m_objectManager = nullptr;
+    // Non-owning pointer to the SpellManager (Needs to be passed or accessed via BotController)
+    SpellManager* m_spellManager = nullptr;
     // Removed individual manager pointers:
     // ObjectManager* m_objectManager = nullptr;
-    // SpellManager* m_spellManager = nullptr;
     // PathManager* m_pathManager = nullptr;
     // MovementController* m_movementController = nullptr;
 
     // State
     std::atomic<bool> m_isRunning = {false};
     std::atomic<bool> m_stopRequested = {false};
+
+    // Engine-specific state
+    GrindState m_grindState = GrindState::IDLE;
+    uint64_t m_currentTargetGuid = 0;
+    std::shared_ptr<WowUnit> m_targetUnitPtr = nullptr; // Store the pointer too
+    int m_currentRotationIndex = 0; // Index for iterating through rotation
+    uint64_t m_lastFailedTargetGuid = 0; // Track last GUID that TargetUnitByGuid failed on
+    DWORD m_lastGcdTriggerTime = 0; // Timestamp for GCD tracking
+    DWORD m_combatStartTime = 0; // Track combat duration
+    const DWORD GCD_DURATION = 1500; // Milliseconds for GCD
+
+    // Pathing state
+    int m_currentPathIndex = -1; // -1 indicates no active path segment
 
     // Thread for the engine's main loop
     std::thread m_engineThread;

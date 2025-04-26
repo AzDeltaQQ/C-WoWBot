@@ -20,6 +20,11 @@ namespace GUI {
     static int selected_path_index = -1; // Index of the path selected in the combo box
     static std::string loaded_path_name = ""; // Name of the currently loaded path
 
+    // State for Rotation Loading UI
+    static std::vector<std::string> available_rotations;
+    static int selected_rotation_index = -1;
+    static std::string loaded_rotation_name = "";
+
     // Temporary state for the UI elements - REMOVED
     // static int current_engine_index = 0; 
     // static bool is_bot_running = false;
@@ -38,13 +43,23 @@ namespace GUI {
 
         // Refresh path list when tab becomes visible (simple refresh strategy)
         if (ImGui::IsWindowAppearing()) { // Or use a dedicated refresh button
+             // Refresh Paths
              available_paths = botController->getAvailablePathNames();
              loaded_path_name = botController->getCurrentPathName();
-             selected_path_index = -1; // Reset selection
-             // Try to find the loaded path in the available list and set the index
+             selected_path_index = -1; 
              for (size_t i = 0; i < available_paths.size(); ++i) {
                  if (available_paths[i] == loaded_path_name) {
                      selected_path_index = static_cast<int>(i);
+                     break;
+                 }
+             }
+             // Refresh Rotations
+             available_rotations = botController->getAvailableRotationNames(); // Assumes this method exists
+             loaded_rotation_name = botController->getCurrentRotationName(); // Assumes this method exists
+             selected_rotation_index = -1;
+              for (size_t i = 0; i < available_rotations.size(); ++i) {
+                 if (available_rotations[i] == loaded_rotation_name) {
+                     selected_rotation_index = static_cast<int>(i);
                      break;
                  }
              }
@@ -121,6 +136,64 @@ namespace GUI {
              ImGui::TextDisabled("(Loaded: %s)", loaded_path_name.c_str());
         }
         ImGui::Separator();
+
+        // --- Rotation Loading Controls (New Section) ---
+        ImGui::Text("Load Rotation:");
+        ImGui::SameLine();
+
+        // Convert vector<string> to const char* for ImGui Combo
+        std::vector<const char*> rotation_items;
+        for (const auto& r : available_rotations) {
+            rotation_items.push_back(r.c_str());
+        }
+
+        ImGui::PushItemWidth(150); // Adjust width as needed
+        if (available_rotations.empty()) {
+            ImGui::TextUnformatted("(No rotations found)");
+        } else {
+            if (ImGui::Combo("##RotationSelectCombo", &selected_rotation_index, rotation_items.data(), rotation_items.size())) {
+                // Selection changed - loading happens on button press
+            }
+        }
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        if (ImGui::Button("Load##LoadRotationButton")) {
+            if (selected_rotation_index >= 0 && selected_rotation_index < available_rotations.size()) {
+                const std::string& nameToLoad = available_rotations[selected_rotation_index];
+                // Assumes BotController has this method
+                if (botController->loadRotationByName(nameToLoad)) { 
+                    loaded_rotation_name = nameToLoad; // Update displayed loaded rotation on success
+                     LogMessage(("GUI: Rotation loaded: " + nameToLoad).c_str());
+                } else {
+                    LogMessage(("GUI Error: Failed to load rotation: " + nameToLoad).c_str());
+                    // Optionally show an error popup
+                }
+            } else {
+                 LogMessage("GUI: No rotation selected to load.");
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Refresh##RefreshRotationButton")) {
+            LogMessage("GUI: Refresh button clicked, refreshing rotation list...");
+            // Assumes these methods exist in BotController
+            available_rotations = botController->getAvailableRotationNames(); 
+            loaded_rotation_name = botController->getCurrentRotationName(); 
+            selected_rotation_index = -1; // Reset selection
+            // Try to find the loaded rotation in the available list
+             for (size_t i = 0; i < available_rotations.size(); ++i) {
+                 if (available_rotations[i] == loaded_rotation_name) {
+                     selected_rotation_index = static_cast<int>(i);
+                     break;
+                 }
+             }
+        }
+
+        // Display currently loaded rotation
+        if (!loaded_rotation_name.empty()) {
+             ImGui::SameLine();
+             ImGui::TextDisabled("(Loaded: %s)", loaded_rotation_name.c_str());
+        }
+        ImGui::Separator(); // Add separator after rotation loading
 
         // --- Start/Stop Button --- 
         // Get running state from BotController

@@ -1,5 +1,6 @@
 #include "objectmanager.h"
 #include "log.h" // Include the new log header
+#include "../utils/memory.h" // Added include for MemoryReader
 #include <algorithm>
 #include <cmath>
 #include <stdexcept> // For exception handling
@@ -183,10 +184,21 @@ void ObjectManager::Update() {
     }
 }
 
-// Get object by GUID
+// Get object by GUID (WGUID version)
 std::shared_ptr<WowObject> ObjectManager::GetObjectByGUID(WGUID guid) {
     auto it = m_objectCache.find(guid);
     return (it != m_objectCache.end()) ? it->second : nullptr;
+}
+
+// Add the missing implementation for the uint64_t version
+std::shared_ptr<WowObject> ObjectManager::GetObjectByGUID(uint64_t guid64) {
+    // Convert uint64_t to WGUID
+    WGUID guid;
+    guid.guid_low = static_cast<uint32_t>(guid64 & 0xFFFFFFFF);
+    guid.guid_high = static_cast<uint32_t>((guid64 >> 32) & 0xFFFFFFFF);
+    
+    // Call the WGUID version
+    return GetObjectByGUID(guid); 
 }
 
 // Get objects by type
@@ -303,4 +315,27 @@ uint64_t ObjectManager::GetLocalPlayerGUID() const {
     // Directly return the cached member variable
     // TryFinishInitialization or Update should keep this up-to-date
     return GuidToUint64(m_localPlayerGuid); // Convert WGUID to uint64_t
+}
+
+// Add implementation for GetCurrentTargetGUID
+const DWORD ADDR_CurrentTargetGUID = 0x00BD07B0; // Global variable address
+
+uint64_t ObjectManager::GetCurrentTargetGUID() const {
+    try {
+        // Read the 64-bit GUID from the global address
+        uint64_t targetGuid = MemoryReader::Read<uint64_t>(ADDR_CurrentTargetGUID);
+        return targetGuid;
+    } catch (const std::runtime_error& /*e*/) {
+        // Log error if needed, but avoid spamming
+        // static bool errorLogged = false;
+        // if (!errorLogged) { 
+        //     LogStream ssErr; ssErr << "ObjectManager::GetCurrentTargetGUID Error: " << e.what();
+        //     LogMessage(ssErr.str());
+        //     errorLogged = true; // Log only once
+        // }
+        return 0; // Return 0 on error
+    } catch (...) {
+        // Log error if needed, but avoid spamming
+        return 0; // Return 0 on error
+    }
 }

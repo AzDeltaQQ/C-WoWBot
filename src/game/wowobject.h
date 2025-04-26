@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <iomanip>
+#include "../../utils/memory.h" // Include the robust MemoryReader
+#include "../../utils/log.h" // Include for LogStream and LogMessage
 
 // WoW GUID structure (64-bit identifier for game objects)
 struct WGUID {
@@ -67,18 +69,6 @@ protected:
     float m_cachedScale; 
     uint64_t m_lastUpdateTime = 0; // Basic throttling mechanism
 
-    // Helper to read memory safely
-    template <typename T> 
-    T ReadMemory(uintptr_t address) {
-        if (!m_pointer || address == 0) return T{}; // Check null pointer/address
-        try {
-             // Add check for being within process memory range if possible
-             return *reinterpret_cast<T*>(address);
-        } catch (const std::exception&) {
-             return T{}; // Return default value on memory access error
-        }
-    }
-    
     // Helper to read string from vtable function (for GetName)
     std::string ReadNameFromVTable();
 
@@ -153,9 +143,26 @@ protected:
     uint32_t m_cachedCastingSpellId = 0;
     uint32_t m_cachedChannelSpellId = 0;
 
-    // Helper function to safely read from UnitFields
-    template <typename T> 
-    T ReadUnitField(DWORD valueOffset);
+    // Helper function to safely read from UnitFields - USES MemoryReader::Read
+    template <typename T>
+    T ReadUnitField(DWORD valueOffset) {
+        // This helper reads relative to the UnitFields pointer
+        if (!m_pointer) return T{};
+        // Define OBJECT_UNIT_FIELDS_PTR_OFFSET here or ensure it's included
+        constexpr DWORD OBJECT_UNIT_FIELDS_PTR_OFFSET = 0x8;
+        try {
+            uintptr_t unitFieldsPtrAddr = reinterpret_cast<uintptr_t>(m_pointer) + OBJECT_UNIT_FIELDS_PTR_OFFSET;
+            // Use MemoryReader for safety
+            uintptr_t unitFieldsPtr = MemoryReader::Read<uintptr_t>(unitFieldsPtrAddr);
+            if (!unitFieldsPtr) return T{};
+            // Use MemoryReader for safety
+            return MemoryReader::Read<T>(unitFieldsPtr + valueOffset);
+        } catch (...) {
+             // Log potential error here if needed
+            LogStream ssErr; ssErr << "!!! ReadUnitField FAILED for offset 0x" << std::hex << valueOffset << " !!!"; LogMessage(ssErr.str());
+            return T{}; // Return default value on error
+        }
+    }
 
 public:
     WowUnit(void* ptr, WGUID guid);
@@ -175,10 +182,21 @@ public:
     uint32_t GetChannelSpellId() const { return m_cachedChannelSpellId; }
     
     bool HasFlag(uint32_t flag) const { return (m_cachedUnitFlags & flag) != 0; }
-    bool IsDead() const { 
+    
+    // Modified IsDead to read directly from memory for robustness
+    bool IsDead() {
+        // Read health directly using the helper (which now uses MemoryReader)
+        int currentHealth = ReadUnitField<int>(/*UNIT_FIELD_HEALTH_OFFSET*/ 0x18 * 4); // Use literal offset
+        // Read flags directly
+        uint32_t currentFlags = ReadUnitField<uint32_t>(/*UNIT_FIELD_FLAGS_OFFSET*/ 0x3B * 4); // Use literal offset
+
+        // Log the values read for debugging
+        LogStream ss; ss << "IsDead Check: Health=" << currentHealth << ", Flags=0x" << std::hex << currentFlags; LogMessage(ss.str());
+
         // Check health first, then specific flags if needed
-        return m_cachedHealth <= 0 || HasFlag(0x04000000); // UNIT_FLAG_SKINNABLE
+        return currentHealth <= 0 || (currentFlags & 0x04000000 /*UNIT_FLAG_SKINNABLE*/) != 0;
     }
+
     bool IsCasting() const { return m_cachedCastingSpellId != 0; }
     bool IsChanneling() const { return m_cachedChannelSpellId != 0; }
     std::string GetPowerTypeString() const; // Helper to convert type byte to string

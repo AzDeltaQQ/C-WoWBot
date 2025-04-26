@@ -4,6 +4,8 @@
 #include <atomic> // For std::atomic_bool
 #include <string> // <-- Add this include
 #include <vector> // Add for vector return type
+#include <cstdint> // For uint64_t
+#include "RotationStep.h" // Include the new struct definition
 
 // Forward declarations to reduce header dependencies
 class ObjectManager;
@@ -56,9 +58,23 @@ public:
     std::vector<std::string> getAvailablePathNames() const; // New: List paths
     std::string getCurrentPathName() const; // New: Get loaded path name
     
+    // --- Rotation Methods (New) ---
+    std::vector<std::string> getAvailableRotationNames();
+    bool loadRotationByName(const std::string& name);
+    const std::string& getCurrentRotationName() const;
+    const std::vector<RotationStep>& getCurrentRotation() const;
+    // -----------------------------
+
     // State query
     State getCurrentState() const;
     bool isRunning() const;
+
+    // --- Target Request --- 
+    void requestTarget(uint64_t guid); // Request main thread to target
+    uint64_t getAndClearRequestedTarget(); // Main thread gets request
+    
+    // --- Main Loop (Add declaration) ---
+    void run(); 
 
     // Accessors for components (optional, provide as needed)
     const PathManager* getPathManager() const; 
@@ -79,10 +95,18 @@ private:
     std::atomic<State> m_currentState = {State::IDLE};
     EngineType m_currentEngineType = EngineType::NONE;
     std::atomic<bool> m_stopRequested = {false};
+    std::atomic<uint64_t> m_requestedTargetGuid{0}; // For target requests
+
+    // --- Rotation State (New) ---
+    std::vector<RotationStep> m_currentRotation;
+    std::string m_currentRotationName;
+    std::string m_rotationsDirectory; // Store path
+    // --------------------------
 
     // Thread for the engine's main loop (if applicable)
     // std::thread m_engineThread;
 
     // Private helper methods
     void runGrindingEngine(); // Example task for the thread
+    void initializeRotationsDirectory(); // New helper
 }; 

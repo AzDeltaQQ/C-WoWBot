@@ -99,4 +99,7 @@ public:
     const std::map<uint64_t, std::shared_ptr<WowObject>>& GetObjects() const; // Return const ref
 
     uint64_t GetLocalPlayerGUID() const; // Add this getter
+    
+    // Get the GUID of the currently targeted unit (from global variable)
+    uint64_t GetCurrentTargetGUID() const;
 }; 

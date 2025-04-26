@@ -51,14 +51,14 @@ WowObject::WowObject(void* ptr, WGUID guid, WowObjectType type)
     // Call initial update for basic info like name/scale if pointer is valid
     if (m_pointer) {
         // Read name immediately if possible
-        m_cachedName = ReadNameFromVTable(); 
+        m_cachedName = ReadNameFromVTable();
         // Read initial scale via VTable
         try {
             typedef float (__thiscall* GetScaleFunc)(void* thisptr);
-            void** vftable = ReadMemory<void**>(reinterpret_cast<uintptr_t>(m_pointer));
+            void** vftable = MemoryReader::Read<void**>(reinterpret_cast<uintptr_t>(m_pointer));
             if (vftable) {
                  // Read function pointer from VTable address
-                 uintptr_t funcAddr = ReadMemory<uintptr_t>(reinterpret_cast<uintptr_t>(&vftable[VFTableIndex::VF_GetScale]));
+                 uintptr_t funcAddr = MemoryReader::Read<uintptr_t>(reinterpret_cast<uintptr_t>(&vftable[VFTableIndex::VF_GetScale]));
                  if(funcAddr) {
                     GetScaleFunc func = reinterpret_cast<GetScaleFunc>(funcAddr);
                     m_cachedScale = func(m_pointer);
@@ -74,11 +74,11 @@ std::string WowObject::ReadNameFromVTable() {
     try {
         typedef char* (__thiscall* GetNameFunc)(void* thisptr);
         // Read VTable pointer from object base
-        void** vftable = ReadMemory<void**>(reinterpret_cast<uintptr_t>(m_pointer));
+        void** vftable = MemoryReader::Read<void**>(reinterpret_cast<uintptr_t>(m_pointer));
         if (!vftable) return "[Error VTable Null]";
         
         // Read function pointer from VTable address
-        uintptr_t funcAddr = ReadMemory<uintptr_t>(reinterpret_cast<uintptr_t>(&vftable[VFTableIndex::VF_GetName]));
+        uintptr_t funcAddr = MemoryReader::Read<uintptr_t>(reinterpret_cast<uintptr_t>(&vftable[VFTableIndex::VF_GetName]));
         if (!funcAddr) return "[Error Func Null]";
         
         GetNameFunc func = reinterpret_cast<GetNameFunc>(funcAddr);
@@ -96,7 +96,7 @@ std::string WowObject::ReadNameFromVTable() {
         size_t count = 0;
         constexpr size_t MAX_NAME_LEN = 100; 
         while(count < MAX_NAME_LEN) {
-            char c = ReadMemory<char>(currentAddr + count);
+            char c = MemoryReader::Read<char>(currentAddr + count);
             if (c == '\0') break;
             nameStr += c;
             count++;
@@ -127,15 +127,15 @@ void WowObject::UpdateDynamicData() {
         uintptr_t baseAddr = reinterpret_cast<uintptr_t>(m_pointer);
 
         // Revert back to reading position via direct offsets
-        m_cachedPosition.x = ReadMemory<float>(baseAddr + OBJECT_POS_X_OFFSET);
-        m_cachedPosition.y = ReadMemory<float>(baseAddr + OBJECT_POS_Y_OFFSET);
-        m_cachedPosition.z = ReadMemory<float>(baseAddr + OBJECT_POS_Z_OFFSET);
+        m_cachedPosition.x = MemoryReader::Read<float>(baseAddr + OBJECT_POS_X_OFFSET);
+        m_cachedPosition.y = MemoryReader::Read<float>(baseAddr + OBJECT_POS_Y_OFFSET);
+        m_cachedPosition.z = MemoryReader::Read<float>(baseAddr + OBJECT_POS_Z_OFFSET);
 
         // Keep reading rotation directly via offset
-        m_cachedRotation = ReadMemory<float>(baseAddr + OBJECT_ROTATION_OFFSET);
+        m_cachedRotation = MemoryReader::Read<float>(baseAddr + OBJECT_ROTATION_OFFSET);
         
         // Potentially update Scale here too if needed, maybe less frequently
-        // m_cachedScale = ReadMemory<float>(baseAddr + ...); 
+        // m_cachedScale = MemoryReader::Read<float>(baseAddr + ...); 
     } catch (...) {
         // Handle potential exceptions during memory read
         m_cachedPosition = {0,0,0};
@@ -158,10 +158,10 @@ bool WowObject::Interact() {
     if (!m_pointer) return false;
     try {
         typedef bool (__thiscall* InteractFunc)(void* thisptr);
-        void** vftable = ReadMemory<void**>(reinterpret_cast<uintptr_t>(m_pointer));
+        void** vftable = MemoryReader::Read<void**>(reinterpret_cast<uintptr_t>(m_pointer));
         if (!vftable) return false;
         
-        uintptr_t funcAddr = ReadMemory<uintptr_t>(reinterpret_cast<uintptr_t>(&vftable[VFTableIndex::VF_Interact]));
+        uintptr_t funcAddr = MemoryReader::Read<uintptr_t>(reinterpret_cast<uintptr_t>(&vftable[VFTableIndex::VF_Interact]));
         if (!funcAddr) return false;
 
         InteractFunc func = reinterpret_cast<InteractFunc>(funcAddr);
@@ -176,21 +176,6 @@ bool WowObject::Interact() {
 
 // Constructor
 WowUnit::WowUnit(void* ptr, WGUID guid) : WowObject(ptr, guid, OBJECT_UNIT) {}
-
-// Helper to read from UnitFields safely
-template <typename T>
-T WowUnit::ReadUnitField(DWORD valueOffset) {
-    // This helper reads relative to the UnitFields pointer
-    if (!m_pointer) return T{};
-    try {
-        uintptr_t unitFieldsPtrAddr = reinterpret_cast<uintptr_t>(m_pointer) + OBJECT_UNIT_FIELDS_PTR_OFFSET;
-        uintptr_t unitFieldsPtr = ReadMemory<uintptr_t>(unitFieldsPtrAddr);
-        if (!unitFieldsPtr) return T{};
-        return ReadMemory<T>(unitFieldsPtr + valueOffset);
-    } catch (...) {
-        return T{}; // Return default value on error
-    }
-}
 
 // Update dynamic data for Unit
 void WowUnit::UpdateDynamicData() {
@@ -209,20 +194,20 @@ void WowUnit::UpdateDynamicData() {
     try {
         uintptr_t baseAddr = reinterpret_cast<uintptr_t>(m_pointer);
         uintptr_t unitFieldsPtrAddr = baseAddr + OBJECT_UNIT_FIELDS_PTR_OFFSET;
-        uintptr_t unitFieldsPtr = ReadMemory<uintptr_t>(unitFieldsPtrAddr);
+        uintptr_t unitFieldsPtr = MemoryReader::Read<uintptr_t>(unitFieldsPtrAddr);
         uintptr_t descriptorPtrAddr = baseAddr + OBJECT_DESCRIPTOR_PTR_OFFSET;
-        uintptr_t descriptorPtr = ReadMemory<uintptr_t>(descriptorPtrAddr);
+        uintptr_t descriptorPtr = MemoryReader::Read<uintptr_t>(descriptorPtrAddr);
 
         // Try reading UnitFields data IF the pointer is valid
         if (unitFieldsPtr) { 
             // Read core unit fields using UnitFields offsets
             m_cachedHealth = 0; m_cachedMaxHealth = 0; m_cachedLevel = 0; m_cachedUnitFlags = 0; // Reset before reading
             try {
-                m_cachedHealth = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_HEALTH_OFFSET);
-                m_cachedMaxHealth = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_MAXHEALTH_OFFSET);
-                m_cachedLevel = ReadMemory<int>(unitFieldsPtr + UNIT_FIELD_LEVEL_OFFSET);
-                m_cachedUnitFlags = ReadMemory<uint32_t>(unitFieldsPtr + UNIT_FIELD_FLAGS_OFFSET);
-            } catch (const std::exception& e) {
+                m_cachedHealth = MemoryReader::Read<int>(unitFieldsPtr + UNIT_FIELD_HEALTH_OFFSET);
+                m_cachedMaxHealth = MemoryReader::Read<int>(unitFieldsPtr + UNIT_FIELD_MAXHEALTH_OFFSET);
+                m_cachedLevel = MemoryReader::Read<int>(unitFieldsPtr + UNIT_FIELD_LEVEL_OFFSET);
+                m_cachedUnitFlags = MemoryReader::Read<uint32_t>(unitFieldsPtr + UNIT_FIELD_FLAGS_OFFSET);
+            } catch (const std::exception& /*e*/) {
             } catch (...) {
             }
 
@@ -231,7 +216,7 @@ void WowUnit::UpdateDynamicData() {
             uint8_t rawPowerType = 0xFF; // Default to invalid
             try { // Try reading power type from UNIT_FIELD_BYTES_0 (Byte 3)
                  uintptr_t bytes0Addr = unitFieldsPtr + (0x17*4); 
-                 uint32_t bytes0Val = ReadMemory<uint32_t>(bytes0Addr);
+                 uint32_t bytes0Val = MemoryReader::Read<uint32_t>(bytes0Addr);
                  rawPowerType = (bytes0Val >> 24) & 0xFF; 
             } catch (...) {
             }
@@ -241,7 +226,7 @@ void WowUnit::UpdateDynamicData() {
                 if (descriptorPtr) {
                      try { 
                           uintptr_t descriptorPowerTypeAddr = descriptorPtr + 0x47; 
-                          rawPowerType = ReadMemory<uint8_t>(descriptorPowerTypeAddr);
+                          rawPowerType = MemoryReader::Read<uint8_t>(descriptorPowerTypeAddr);
                      } catch (...) {
                           rawPowerType = 0xFF;
                      }
@@ -263,8 +248,8 @@ void WowUnit::UpdateDynamicData() {
 
             int rawPower = 0; int rawMaxPower = 0;
             try { 
-                rawPower = ReadMemory<int>(unitFieldsPtr + powerOffset);
-                rawMaxPower = ReadMemory<int>(unitFieldsPtr + maxPowerOffset);
+                rawPower = MemoryReader::Read<int>(unitFieldsPtr + powerOffset);
+                rawMaxPower = MemoryReader::Read<int>(unitFieldsPtr + maxPowerOffset);
             } catch(...) { 
             }
             m_cachedPower = rawPower; m_cachedMaxPower = rawMaxPower;
@@ -272,8 +257,8 @@ void WowUnit::UpdateDynamicData() {
 
             // Read casting/channeling from object base offsets (independent of UnitFields)
             try { 
-                 m_cachedCastingSpellId = ReadMemory<uint32_t>(baseAddr + OBJECT_CASTING_ID_OFFSET);
-                 m_cachedChannelSpellId = ReadMemory<uint32_t>(baseAddr + OBJECT_CHANNEL_ID_OFFSET);
+                 m_cachedCastingSpellId = MemoryReader::Read<uint32_t>(baseAddr + OBJECT_CASTING_ID_OFFSET);
+                 m_cachedChannelSpellId = MemoryReader::Read<uint32_t>(baseAddr + OBJECT_CHANNEL_ID_OFFSET);
             } catch (...) {
                 m_cachedCastingSpellId = 0; m_cachedChannelSpellId = 0;
             }
@@ -285,7 +270,7 @@ void WowUnit::UpdateDynamicData() {
             m_cachedPowerType = 0; m_cachedCastingSpellId = 0; m_cachedChannelSpellId = 0;
         }
 
-    } catch (const std::exception& e) {
+    } catch (const std::exception& /*e*/) {
         // Clear all fields on outer exception
         m_cachedHealth = 0; m_cachedMaxHealth = 0; m_cachedLevel = 0; m_cachedUnitFlags = 0;
         m_cachedPower = 0; m_cachedMaxPower = 0; m_cachedPowerType = 0;
@@ -350,9 +335,9 @@ void WowGameObject::UpdateDynamicData() {
         constexpr DWORD GO_RAW_POS_Z_OFFSET = 0xF0;
 
         // Assign to correct members based on observed order
-        m_cachedPosition.x = ReadMemory<float>(baseAddr + GO_RAW_POS_X_OFFSET); // Read X from 0xEC
-        m_cachedPosition.y = ReadMemory<float>(baseAddr + GO_RAW_POS_Y_OFFSET); // Read Y from 0xE8
-        m_cachedPosition.z = ReadMemory<float>(baseAddr + GO_RAW_POS_Z_OFFSET); // Z remains 0xF0
+        m_cachedPosition.x = MemoryReader::Read<float>(baseAddr + GO_RAW_POS_X_OFFSET); // Read X from 0xEC
+        m_cachedPosition.y = MemoryReader::Read<float>(baseAddr + GO_RAW_POS_Y_OFFSET); // Read Y from 0xE8
+        m_cachedPosition.z = MemoryReader::Read<float>(baseAddr + GO_RAW_POS_Z_OFFSET); // Z remains 0xF0
     } catch (...) {
     }
 }
@@ -362,11 +347,11 @@ int WowGameObject::GetQuestStatus() {
     if (!m_pointer) return 0;
     try {
         typedef int (__thiscall* GetQuestStatusFunc)(void* thisptr);
-        void** vftable = ReadMemory<void**>(reinterpret_cast<uintptr_t>(m_pointer));
+        void** vftable = MemoryReader::Read<void**>(reinterpret_cast<uintptr_t>(m_pointer));
          if (!vftable) return 0;
 
         // Use the ENUM index for GetQuestStatus
-        uintptr_t funcAddr = ReadMemory<uintptr_t>(reinterpret_cast<uintptr_t>(&vftable[VFTableIndex::VF_GetQuestStatus])); 
+        uintptr_t funcAddr = MemoryReader::Read<uintptr_t>(reinterpret_cast<uintptr_t>(&vftable[VFTableIndex::VF_GetQuestStatus])); 
          if (!funcAddr) return 0;
 
         GetQuestStatusFunc func = reinterpret_cast<GetQuestStatusFunc>(funcAddr);

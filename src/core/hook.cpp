@@ -9,6 +9,7 @@
 #include "functions.h"
 #include "gui.h"
 #include "wowobject.h"
+#include "BotController.h"
 
 #pragma comment(lib, "d3d9.lib")
 
@@ -43,6 +44,11 @@ static bool g_needsWin32Reinit = false;
 // Game addresses
 constexpr DWORD ENUM_VISIBLE_OBJECTS_ADDR = 0x004D4B30;
 constexpr DWORD GET_OBJECT_PTR_BY_GUID_INNER_ADDR = 0x004D4BB0;
+
+// Change the extern declaration to specify the GUI namespace
+namespace GUI {
+    extern BotController* g_BotController; // Declare it within the GUI namespace
+}
 
 // The hooked EndScene function
 HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
@@ -128,7 +134,32 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         if (!objMgr->IsInitialized()) {
             objMgr->TryFinishInitialization(); // Keep trying to initialize if not ready
         } else {
-            // ObjectManager is initialized, proceed with player updates
+            // ObjectManager is initialized, update the entire cache first
+            try {
+                objMgr->Update(); 
+            } catch (const std::exception& e) {
+                LogStream errLog;
+                errLog << "[HookedEndScene] EXCEPTION calling objMgr->Update(): " << e.what();
+                LogMessage(errLog.str());
+            } catch (...) {
+                 LogMessage("[HookedEndScene] UNKNOWN EXCEPTION calling objMgr->Update()");
+            }
+
+            // --- ADD BotController::run() CALL HERE ---
+            if (GUI::g_BotController) {
+                try {
+                    GUI::g_BotController->run(); // Run the bot controller's main thread logic
+                } catch (const std::exception& e) {
+                    LogStream errLog;
+                    errLog << "[HookedEndScene] EXCEPTION calling GUI::g_BotController->run(): " << e.what();
+                    LogMessage(errLog.str());
+                } catch (...) {
+                    LogMessage("[HookedEndScene] UNKNOWN EXCEPTION calling GUI::g_BotController->run()");
+                }
+            }
+            // --- END BotController::run() CALL ---
+
+            // Now proceed with player-specific updates if needed (or remove if Update handles it)
             uint64_t playerGuid = objMgr->GetLocalPlayerGUID();
             DWORD clientState = 0;
             try {

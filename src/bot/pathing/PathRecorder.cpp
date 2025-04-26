@@ -21,7 +21,7 @@ namespace {
             // Basic check if address looks somewhat valid (optional)
             // if (IsBadReadPtr((const void*)address, sizeof(T))) { return T{}; }
             return *reinterpret_cast<T*>(address);
-        } catch (const std::exception& e) {
+        } catch (const std::exception& /*e*/) {
              // Optionally log the exception
              // LogMessageV("ReadMemorySafe Exception: %s at 0x%p", e.what(), address);
              return T{}; // Return default value on memory access error

@@ -8,6 +8,9 @@
 #include <string>
 // REMOVED: #include "spell_info.h" // Will be simplified later
 
+// Forward declare needed classes
+class ObjectManager;
+
 class SpellManager {
 private:
     // Singleton instance
@@ -96,6 +99,16 @@ public:
     // Function to apply the memory patch for the cooldown display bug.
     // Should be called once during initialization.
     static void PatchCooldownBug_Final();
+
+    /**
+     * @brief Checks if the target is within range of a given spell for the player.
+     * Requires ObjectManager access.
+     * @param spellId The ID of the spell.
+     * @param targetGuid The GUID of the target unit.
+     * @param objManager A pointer to the ObjectManager instance.
+     * @return True if the target is within range, false otherwise or on error.
+     */
+    static bool IsSpellInRange(uint32_t spellId, uint64_t targetGuid, ObjectManager* objManager);
 
 // private:
     // static bool m_initialized; // Uncomment if Initialize/Shutdown are used

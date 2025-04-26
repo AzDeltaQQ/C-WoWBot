@@ -10,6 +10,9 @@
 #include <cstdio> // For printf/logging
 #include <cstring>      // For memcpy
 #include <string>      // For std::string
+#include "ObjectManager.h" // Includes wowobject.h definitions indirectly
+#include "wowobject.h" // Explicitly include WowObject definitions
+#include <cmath> // For sqrt
 
 // Include the actual memory reader utility
 #include "../utils/memory.h" 
@@ -220,123 +223,45 @@ std::vector<uint32_t> SpellManager::ReadSpellbook() {
 
 // --- CORRECTED GetSpellNameByID Implementation --- (Replacing with user-provided code)
 std::string SpellManager::GetSpellNameByID(uint32_t spellId) {
-    LogStream ssTrace; // For detailed tracing
-    ssTrace << "GetSpellNameByID Enter: SpellID=" << spellId;
-    LogMessage(ssTrace.str());
-
     try {
-        // --- CORRECTED LOGIC ---
-        // Addresses relative to the static pointer location ADDR_SpellDBContextPtr (0xAD49D0)
-        constexpr uintptr_t ADDR_MinID = ADDR_SpellDBContextPtr + 0x10; // 0xAD49E0
-        constexpr uintptr_t ADDR_MaxID = ADDR_SpellDBContextPtr + 0x0C; // 0xAD49DC
-        constexpr uintptr_t ADDR_IndexOfTablePtrValue = ADDR_SpellDBContextPtr + 0x20; // 0xAD49F0
+        // --- Steps 1-4: Get RecordPtr (Simplified) ---
+        constexpr uintptr_t ADDR_MinID = ADDR_SpellDBContextPtr + 0x10;
+        constexpr uintptr_t ADDR_MaxID = ADDR_SpellDBContextPtr + 0x0C;
+        constexpr uintptr_t ADDR_IndexOfTablePtrValue = ADDR_SpellDBContextPtr + 0x20;
 
-        // 1. Read MinID, MaxID, and the pointer to the Index Table directly
-        uint32_t minID = 0;
-        uint32_t maxID = 0;
-        uintptr_t indexTablePtr = 0; // This will hold the POINTER to the array of record pointers
-        try {
-            minID = MemoryReader::Read<uint32_t>(ADDR_MinID);
-            maxID = MemoryReader::Read<uint32_t>(ADDR_MaxID);
-            indexTablePtr = MemoryReader::Read<uintptr_t>(ADDR_IndexOfTablePtrValue); // Read the pointer value
+        uint32_t minID = MemoryReader::Read<uint32_t>(ADDR_MinID);
+        uint32_t maxID = MemoryReader::Read<uint32_t>(ADDR_MaxID);
+        if (spellId < minID || spellId > maxID) return ""; // Handle invalid spell ID early
 
-            ssTrace = LogStream(); // Reuse stream
-            ssTrace << "  Read MinID from 0x" << std::hex << ADDR_MinID << " = " << std::dec << minID; LogMessage(ssTrace.str());
-            ssTrace = LogStream(); ssTrace << "  Read MaxID from 0x" << std::hex << ADDR_MaxID << " = " << std::dec << maxID; LogMessage(ssTrace.str());
-            ssTrace = LogStream(); ssTrace << "  Read IndexTablePtr Value from 0x" << std::hex << ADDR_IndexOfTablePtrValue << " = 0x" << std::hex << indexTablePtr; LogMessage(ssTrace.str());
+        uintptr_t indexTablePtr = MemoryReader::Read<uintptr_t>(ADDR_IndexOfTablePtrValue);
+        if (indexTablePtr == 0) return "";
 
-        } catch (const std::runtime_error& readErr) {
-            LogStream ssErr;
-            ssErr << "GetSpellNameByID Error: Exception reading Min/Max/TablePtrValue: " << readErr.what();
-            LogMessage(ssErr.str());
-            return "[Context Data Read Error]";
-        }
-        // --- END CORRECTED LOGIC ---
-
-
-        // 2. Validate Spell ID range and IndexTablePtr value
-        if (spellId < minID || spellId > maxID) {
-            ssTrace = LogStream(); ssTrace << "  Result: ID " << std::dec << spellId << " out of range (" << minID << "-" << maxID << ")"; LogMessage(ssTrace.str());
-            return "[ID Out of Range]";
-        }
-        if (indexTablePtr == 0) {
-            LogMessage("GetSpellNameByID Error: IndexTablePtr read is NULL.");
-            return "[Null Index Tbl]";
-        }
-        // Check if the INDEX TABLE POINTER points to valid memory
-        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(indexTablePtr))) {
-             LogStream ssErr; ssErr << "GetSpellNameByID Error: IndexTablePtr 0x" << std::hex << indexTablePtr << " points to invalid memory."; LogMessage(ssErr.str());
-            return "[Invalid Index Tbl Ptr]";
-        }
-
-        // 3. Calculate index and get Record Pointer address (within the index table)
         uint32_t index = spellId - minID;
-        uintptr_t pRecordPtrAddr = indexTablePtr + (index * sizeof(uintptr_t)); // Address of the pointer *within* the index table
-        ssTrace = LogStream(); ssTrace << "  Calculated Index=" << std::dec << index << ", Addr of Record Ptr = 0x" << std::hex << pRecordPtrAddr; LogMessage(ssTrace.str());
-
-        // Check if the address *within* the index table is readable
-        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(pRecordPtrAddr))) {
-             LogStream ssErr; ssErr << "GetSpellNameByID Error: Cannot read from index table at address 0x" << std::hex << pRecordPtrAddr; LogMessage(ssErr.str());
-            return "[Invalid Index Entry Addr]";
-        }
-
-        // 4. Get the actual Record Pointer value from the index table
+        uintptr_t pRecordPtrAddr = indexTablePtr + (index * sizeof(uintptr_t));
+        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(pRecordPtrAddr))) return "";
         uintptr_t recordPtr = MemoryReader::Read<uintptr_t>(pRecordPtrAddr);
-        ssTrace = LogStream(); ssTrace << "  Read Record Ptr from Index Table = 0x" << std::hex << recordPtr; LogMessage(ssTrace.str());
+        if (recordPtr == 0 || !IsValidReadPtrHelper(reinterpret_cast<const void*>(recordPtr))) return "";
 
-        if (recordPtr == 0) {
-             // This might be normal for unused spell IDs within the range
-             // LogStream ssWarn; ssWarn << "GetSpellNameByID: Null record pointer for Spell ID " << spellId << "."; LogMessage(ssWarn.str());
-            return "[Null Record Ptr]";
-        }
-        // Check if the record pointer points to valid memory
-         if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(recordPtr))) {
-             LogStream ssErr; ssErr << "GetSpellNameByID Error: RecordPtr 0x" << std::hex << recordPtr << " points to invalid memory."; LogMessage(ssErr.str());
-            return "[Invalid Record Ptr]";
-        }
-
-        // 5. Check for compression
         uint8_t isCompressed = MemoryReader::Read<uint8_t>(ADDR_CompressionFlag);
-        if (isCompressed) return "[Compressed Record]";
+        if (isCompressed) return "[Compressed Record]"; // Handle compressed records
+        // --- End Steps 1-4 ---
 
-        // 6. Get the address where the name pointer is stored within the record
-        uintptr_t namePtrAddr = recordPtr + OFFSET_DBC_NAME_PTR; // Ensure this uses 0x220
-        ssTrace = LogStream(); ssTrace << "  Address of Name Ptr within record = 0x" << std::hex << namePtrAddr; LogMessage(ssTrace.str());
+        // 5. Get Name Pointer Address
+        uintptr_t namePtrAddr = recordPtr + OFFSET_DBC_NAME_PTR; // Use 0x220
+        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(namePtrAddr), sizeof(char*))) return "";
 
-         // Check if the address *within* the record holding the name pointer is readable
-         if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(namePtrAddr), sizeof(char*))) {
-             LogStream ssErr; ssErr << "GetSpellNameByID Error: Cannot read name pointer address from record at 0x" << std::hex << namePtrAddr; LogMessage(ssErr.str());
-            return "[Invalid Record Data @ Name]";
-        }
+        // 6. Read Name Pointer Value
+        char* pszName = MemoryReader::Read<char*>(namePtrAddr);
 
-        // 7. Read the name pointer from the record
-        char* pszName = MemoryReader::Read<char*>(namePtrAddr); // Read the pointer to the string
-        ssTrace = LogStream(); ssTrace << "  Read Name Ptr Value = 0x" << std::hex << reinterpret_cast<uintptr_t>(pszName); LogMessage(ssTrace.str());
+        // 7. Read String (Helper checks pointer validity)
+        std::string result = SafeReadStringHelper(pszName);
+        return result;
 
-
-        // 8. Read the string safely using the helper function
-        // The helper checks pszName validity
-        std::string resultName = SafeReadStringHelper(pszName);
-        ssTrace = LogStream(); ssTrace << "  SafeReadString Result: \"" << resultName << "\""; LogMessage(ssTrace.str());
-        return resultName;
-
-    } catch (const std::runtime_error& e) {
-        LogStream ssErr;
-        ssErr << "GetSpellNameByID: Runtime error for spell ID " << spellId << " - " << e.what();
-        LogMessage(ssErr.str());
-        return "[Read Error]";
-    } catch (...) {
-        LogStream ssErr;
-        ssErr << "GetSpellNameByID: Unknown exception for spell ID " << spellId;
-        LogMessage(ssErr.str());
-        return "[Unknown Error]";
-    }
+    } catch (...) { /* Log error maybe? */ return "[Name Read Error]"; }
 }
-// --- End GetSpellNameByID ---
 
 // --- GetSpellDescriptionByID Implementation (Direct Pointer Logic) ---
 std::string SpellManager::GetSpellDescriptionByID(uint32_t spellId) {
-    // LogStream ssTrace; ssTrace << "GetSpellDescriptionByID Enter: SpellID=" << spellId; LogMessage(ssTrace.str());
     try {
         // --- Steps 1-4: Get RecordPtr (Simplified) ---
         constexpr uintptr_t ADDR_MinID = ADDR_SpellDBContextPtr + 0x10;
@@ -352,32 +277,29 @@ std::string SpellManager::GetSpellDescriptionByID(uint32_t spellId) {
 
         uint32_t index = spellId - minID;
         uintptr_t pRecordPtrAddr = indexTablePtr + (index * sizeof(uintptr_t));
-        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(pRecordPtrAddr))) return ""; 
+        if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(pRecordPtrAddr))) return "";
         uintptr_t recordPtr = MemoryReader::Read<uintptr_t>(pRecordPtrAddr);
         if (recordPtr == 0 || !IsValidReadPtrHelper(reinterpret_cast<const void*>(recordPtr))) return "";
-        
+
         uint8_t isCompressed = MemoryReader::Read<uint8_t>(ADDR_CompressionFlag);
         if (isCompressed) return "[Compressed Record]";
         // --- End Steps 1-4 ---
 
         // 5. Get Description Pointer Address
         uintptr_t descPtrAddr = recordPtr + OFFSET_DBC_DESC_PTR; // Use 0x228
-        // ssTrace = LogStream(); ssTrace << "  Address of Desc Ptr = 0x" << std::hex << descPtrAddr; LogMessage(ssTrace.str());
         if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(descPtrAddr), sizeof(char*))) return "";
 
         // 6. Read Description Pointer Value
         char* pszDesc = MemoryReader::Read<char*>(descPtrAddr);
-        // ssTrace = LogStream(); ssTrace << "  Read Desc Ptr Value = 0x" << std::hex << reinterpret_cast<uintptr_t>(pszDesc); LogMessage(ssTrace.str());
 
         // 7. Read String (Helper checks pointer validity)
         return SafeReadStringHelper(pszDesc);
 
-    } catch (...) { /* Log error maybe? */ return "[Desc Read Error]"; }
+    } catch (...) { /* Log error maybe? */ return "[Description Read Error]"; }
 }
 
 // --- GetSpellTooltipByID Implementation (Direct Pointer Logic) ---
 std::string SpellManager::GetSpellTooltipByID(uint32_t spellId) {
-    // LogStream ssTrace; ssTrace << "GetSpellTooltipByID Enter: SpellID=" << spellId; LogMessage(ssTrace.str());
     try {
         // --- Steps 1-4: Get RecordPtr (Simplified) ---
         constexpr uintptr_t ADDR_MinID = ADDR_SpellDBContextPtr + 0x10;
@@ -403,12 +325,10 @@ std::string SpellManager::GetSpellTooltipByID(uint32_t spellId) {
 
         // 5. Get Tooltip Pointer Address
         uintptr_t tooltipPtrAddr = recordPtr + OFFSET_DBC_TOOLTIP_PTR; // Use 0x22C
-        // ssTrace = LogStream(); ssTrace << "  Address of Tooltip Ptr = 0x" << std::hex << tooltipPtrAddr; LogMessage(ssTrace.str());
         if (!IsValidReadPtrHelper(reinterpret_cast<const void*>(tooltipPtrAddr), sizeof(char*))) return "";
 
         // 6. Read Tooltip Pointer Value
         char* pszTooltip = MemoryReader::Read<char*>(tooltipPtrAddr);
-        // ssTrace = LogStream(); ssTrace << "  Read Tooltip Ptr Value = 0x" << std::hex << reinterpret_cast<uintptr_t>(pszTooltip); LogMessage(ssTrace.str());
 
         // 7. Read String (Helper checks pointer validity)
         return SafeReadStringHelper(pszTooltip);
@@ -566,3 +486,76 @@ std::vector<uint32_t> SpellManager::GetSpellbookIDs() {
 
 // Initialization (if needed in the future)
 // ... rest of existing code ...
+
+// Helper function to convert uint64_t to WGUID
+inline WGUID GuidFromUint64(uint64_t guid64) {
+    WGUID guid;
+    guid.guid_low = static_cast<uint32_t>(guid64 & 0xFFFFFFFF);
+    guid.guid_high = static_cast<uint32_t>((guid64 >> 32) & 0xFFFFFFFF);
+    return guid;
+}
+
+bool SpellManager::IsSpellInRange(uint32_t spellId, uint64_t targetGuid, ObjectManager* objManager) {
+    if (!objManager) {
+        LogMessage("SpellManager::IsSpellInRange Error: ObjectManager is null.");
+        return false;
+    }
+
+    // Use correct methods and shared_ptr
+    std::shared_ptr<WowPlayer> player = objManager->GetLocalPlayer();
+    std::shared_ptr<WowObject> target = objManager->GetObjectByGUID(GuidFromUint64(targetGuid)); // Use helper and correct method
+
+    if (!player || !target) {
+        // LogMessage("SpellManager::IsSpellInRange: Player or Target not found."); // Can be noisy
+        return false;
+    }
+
+    // --- Get Spell Range ---
+    // TODO: Implement proper spell range fetching (e.g., from DBC or a map)
+    // For now, using a placeholder default range, e.g., 30 yards.
+    // We could potentially use the range stored in the RotationStep if we pass it,
+    // but ideally, SpellManager knows the real range.
+    float spellRange = 30.0f; // Placeholder range
+    float minRange = 0.0f; // Placeholder min range (some spells might have one)
+
+    // --- Calculate Distance ---
+    try {
+        // Use GetPosition() from shared_ptr
+        Vector3 playerPos = player->GetPosition();
+        Vector3 targetPos = target->GetPosition();
+
+        // Basic 3D distance (consider X/Y only for ground range if needed)
+        float dx = playerPos.x - targetPos.x;
+        float dy = playerPos.y - targetPos.y;
+        float dz = playerPos.z - targetPos.z; // Include Z for now
+        float distance = std::sqrt(dx*dx + dy*dy + dz*dz);
+
+        // --- Add Combat Reach ---
+        // Add player and target combat reach/hitbox radius for effective range
+        // These are approximations for 3.3.5a
+        float playerCombatReach = 2.5f; // Approx
+        float targetCombatReach = 2.5f; // Approx (adjust based on target size if possible)
+        float effectiveRange = spellRange + playerCombatReach + targetCombatReach;
+        float effectiveMinRange = minRange > 0 ? (minRange + playerCombatReach + targetCombatReach) : 0.0f; // Adjust min range too
+
+        // LogStream ss;
+        // ss << "SpellRange Check: ID=" << spellId << ", Dist=" << distance
+        //    << ", MaxEffRange=" << effectiveRange << ", MinEffRange=" << effectiveMinRange;
+        // LogMessage(ss.str());
+
+        if (distance <= effectiveRange) {
+            if (effectiveMinRange > 0.0f) {
+                return distance >= effectiveMinRange; // Check min range if applicable
+            }
+            return true; // Within max range, no min range constraint
+        }
+
+    } catch (const std::runtime_error& e) {
+         LogStream ssErr;
+         ssErr << "SpellManager::IsSpellInRange Error reading positions: " << e.what();
+         LogMessage(ssErr.str());
+         return false;
+    }
+
+    return false; // Out of range
+}
