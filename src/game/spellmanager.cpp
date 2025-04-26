@@ -127,7 +127,7 @@ SpellManager& SpellManager::GetInstance() {
     return *m_instance;
 }
 
-// CastSpell implementation
+// CastSpell implementation - Reverted to 4-arg signature
 bool SpellManager::CastSpell(int spellId, uint64_t targetGuid, int unknownIntArg1, char unknownCharArg) {
     // Ensure the function pointer is initialized
     if (::CastLocalPlayerSpell == nullptr) {
@@ -137,17 +137,18 @@ bool SpellManager::CastSpell(int spellId, uint64_t targetGuid, int unknownIntArg
     }
 
     LogStream ss;
+    // Log with all 4 arguments
     ss << "SpellManager::CastSpell: Attempting to cast SpellID=" << spellId 
        << " on TargetGUID=0x" << std::hex << targetGuid 
-       << " (Args: " << unknownIntArg1 << ", '" << unknownCharArg << "')";
+       << " (Args: " << unknownIntArg1 << ", " << static_cast<int>(unknownCharArg) << ")"; // Log char as int
     LogMessage(ss.str());
 
     try {
-        // Call the actual game function
-        // The return value is 'char' according to the disassembly, potentially indicating success/failure or some state.
+        // Call the actual game function with 4 arguments
         char result = ::CastLocalPlayerSpell(spellId, unknownIntArg1, targetGuid, unknownCharArg);
         
         LogStream ssResult;
+        // Log the result char and its code
         ssResult << "SpellManager::CastSpell: CastLocalPlayerSpell returned '" << result << "' (char code: " << static_cast<int>(result) << ")";
         LogMessage(ssResult.str());
         

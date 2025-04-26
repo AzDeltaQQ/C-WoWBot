@@ -72,6 +72,10 @@ public:
     // --- Target Request --- 
     void requestTarget(uint64_t guid); // Request main thread to target
     uint64_t getAndClearRequestedTarget(); // Main thread gets request
+
+    // --- Spell Cast Request --- 
+    void requestCastSpell(uint32_t spellId); // Request main thread to cast spell
+    uint32_t getAndClearRequestedSpell();   // Main thread gets request
     
     // --- Main Loop (Add declaration) ---
     void run(); 
@@ -96,6 +100,7 @@ private:
     EngineType m_currentEngineType = EngineType::NONE;
     std::atomic<bool> m_stopRequested = {false};
     std::atomic<uint64_t> m_requestedTargetGuid{0}; // For target requests
+    std::atomic<uint32_t> m_requestedSpellId{0};    // For spell cast requests
 
     // --- Rotation State (New) ---
     std::vector<RotationStep> m_currentRotation;

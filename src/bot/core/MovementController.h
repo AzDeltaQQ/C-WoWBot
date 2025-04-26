@@ -55,6 +55,15 @@ public:
     // CTM via Direct Memory Write (primary method for pathing)
     bool ClickToMove(const Vector3& targetPos, const Vector3& playerPos);
 
+    // Simulate Right-Clicking on a point (e.g., for interacting with objects)
+    void RightClickAt(const Vector3& targetPos);
+
+    // Stop any current CTM movement
+    void Stop();
+
+    // Face a specific target using CTM Action 1
+    void FaceTarget(uint64_t targetGuid);
+
     // Destructor (if needed for cleanup, e.g., if m_instance was allocated)
     // ~MovementController(); 
 };

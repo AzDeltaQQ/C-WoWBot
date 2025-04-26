@@ -118,7 +118,7 @@ void WowObject::UpdateDynamicData() {
     // --- Throttling ---
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     // Allow update if never updated, or enough time passed
-    if (m_lastUpdateTime != 0 && now_ms < m_lastUpdateTime + 100) { // 100ms throttle
+    if (m_lastUpdateTime != 0 && now_ms < (m_lastUpdateTime + 100LL)) { // 100ms throttle (use LL for literal type match)
         return; 
     }
 
@@ -187,7 +187,8 @@ void WowUnit::UpdateDynamicData() {
 
     // Get the actual local player GUID (still useful for rage division later)
     ObjectManager* objMgr = ObjectManager::GetInstance();
-    uint64_t localPlayerGuid64 = objMgr->IsInitialized() ? objMgr->GetLocalPlayerGUID() : 0;
+    WGUID localPlayerGuid = objMgr->IsInitialized() ? objMgr->GetLocalPlayerGUID() : WGUID{0, 0};
+    uint64_t localPlayerGuid64 = GuidToUint64(localPlayerGuid);
     bool isPlayerObject = (GuidToUint64(m_guid) == localPlayerGuid64 && localPlayerGuid64 != 0);
 
     // --- Read Unit Specific Data --- 

@@ -12,6 +12,7 @@ const DWORD OFF_HandleTerrainClick = 0x00727400; // Address for CORE CTM functio
 // const DWORD OFF_ClickToMove = 0x704CD0; // Lower-level CTM - Not using currently
 
 // CastLocalPlayerSpell Function
+// Reverting to 4-argument signature based on disassembly
 typedef char (__cdecl* CastLocalPlayerSpellFn)(int spellId, int unknownIntArg1, uint64_t targetGuid, char unknownCharArg);
 extern CastLocalPlayerSpellFn CastLocalPlayerSpell;
 const DWORD OFF_CastLocalPlayerSpell = 0x0080DA40; // Address from disassembly

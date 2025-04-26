@@ -160,7 +160,7 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
             // --- END BotController::run() CALL ---
 
             // Now proceed with player-specific updates if needed (or remove if Update handles it)
-            uint64_t playerGuid = objMgr->GetLocalPlayerGUID();
+            uint64_t playerGuid = GuidToUint64(objMgr->GetLocalPlayerGUID());
             DWORD clientState = 0;
             try {
                 clientState = *reinterpret_cast<DWORD*>(CLIENT_STATE_ADDR);

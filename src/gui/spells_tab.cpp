@@ -255,10 +255,9 @@ void RenderSpellsTab() {
                             const auto& step = currentRotation[i];
                             outFile << "  {\n"; // Start JSON object
                             outFile << "    \"spellId\": " << step.spellId << ",\n";
-                            outFile << "    \"spellName\": \"" << step.spellName << "\",\n"; 
-                            outFile << "    \"triggersGCD\": " << (step.triggersGCD ? "true" : "false") << ",\n";
-                            // --- Add new fields to JSON --- 
-                            outFile << "    \"requiresTarget\": " << (step.requiresTarget ? "true" : "false") << ",\n";
+                            outFile << "    \"spellName\": \"" << step.spellName << "\",\n"; // Ensure spellName is properly escaped if needed later
+                            outFile << "    \"triggersGCD\": " << (step.triggersGCD ? "true" : "false") << ",\n"; // Output JSON boolean
+                            outFile << "    \"requiresTarget\": " << (step.requiresTarget ? "true" : "false") << ",\n"; // Output JSON boolean
                             outFile << "    \"castRange\": " << std::fixed << std::setprecision(1) << step.castRange << ",\n";
                             outFile << "    \"minPlayerHealthPercent\": " << std::fixed << std::setprecision(1) << step.minPlayerHealthPercent << ",\n";
                             outFile << "    \"maxPlayerHealthPercent\": " << std::fixed << std::setprecision(1) << step.maxPlayerHealthPercent << ",\n";
@@ -266,7 +265,6 @@ void RenderSpellsTab() {
                             outFile << "    \"maxTargetHealthPercent\": " << std::fixed << std::setprecision(1) << step.maxTargetHealthPercent << ",\n";
                             outFile << "    \"minPlayerManaPercent\": " << std::fixed << std::setprecision(1) << step.minPlayerManaPercent << ",\n";
                             outFile << "    \"maxPlayerManaPercent\": " << std::fixed << std::setprecision(1) << step.maxPlayerManaPercent << "\n"; 
-                            // --- End new fields --- 
                             outFile << "  }"; // End JSON object
                             if (i < currentRotation.size() - 1) {
                                 outFile << ","; 

@@ -1,4 +1,3 @@
-#include "objectmanager.h"
 #include "log.h" // Include the new log header
 #include "../utils/memory.h" // Added include for MemoryReader
 #include <algorithm>
@@ -7,6 +6,9 @@
 #include <string>    // Needed for std::to_string
 #include <sstream>   // Needed for string streams
 #include <iomanip>   // For std::setw and std::setfill
+#include <mutex>     // Added for std::mutex
+#include "wowobject.h" // Then the definition of Vec3
+#include "objectmanager.h" // Then the header using Vec3
 
 // Initialize static instance
 ObjectManager* ObjectManager::m_instance = nullptr;
@@ -169,11 +171,14 @@ int __cdecl ObjectManager::EnumObjectsCallback(uint32_t guid_low, uint32_t guid_
 void ObjectManager::Update() {
     // Don't try to update if not fully initialized
     if (!IsInitialized()) {
-        LogMessage("ObjectManager::Update skipped: Not fully initialized yet.\n");
+        // LogMessage("ObjectManager::Update skipped: Not fully initialized yet.\n"); // Can be noisy
         return;
     }
     
-    m_objectCache.clear();
+    // Lock the mutex for the duration of this function
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
+    
+    m_objectCache.clear(); // Now safe to modify
     if (m_enumVisibleObjects) {
         try {
             m_enumVisibleObjects(EnumObjectsCallback, reinterpret_cast<int>(this));
@@ -186,6 +191,7 @@ void ObjectManager::Update() {
 
 // Get object by GUID (WGUID version)
 std::shared_ptr<WowObject> ObjectManager::GetObjectByGUID(WGUID guid) {
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
     auto it = m_objectCache.find(guid);
     return (it != m_objectCache.end()) ? it->second : nullptr;
 }
@@ -203,6 +209,7 @@ std::shared_ptr<WowObject> ObjectManager::GetObjectByGUID(uint64_t guid64) {
 
 // Get objects by type
 std::vector<std::shared_ptr<WowObject>> ObjectManager::GetObjectsByType(WowObjectType type) {
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
     std::vector<std::shared_ptr<WowObject>> results;
     for (const auto& pair : m_objectCache) {
         if (pair.second && pair.second->GetType() == type) {
@@ -222,10 +229,13 @@ std::shared_ptr<WowPlayer> ObjectManager::GetLocalPlayer() {
     // Proceed with previous logic (cache check -> direct lookup -> fallback)
     if (m_localPlayerGuid.IsValid()) {
         // 1. Check Cache first (most efficient if Update() was called recently)
-        auto objFromCache = GetObjectByGUID(m_localPlayerGuid);
-        if (objFromCache && objFromCache->GetType() == OBJECT_PLAYER) {
-            return std::static_pointer_cast<WowPlayer>(objFromCache);
-        }
+        {
+             std::lock_guard<std::mutex> lock(m_cacheMutex);
+             auto objFromCache = GetObjectByGUID_locked(m_localPlayerGuid); // Helper to avoid re-locking
+             if (objFromCache && objFromCache->GetType() == OBJECT_PLAYER) {
+                 return std::static_pointer_cast<WowPlayer>(objFromCache);
+             }
+        } // Mutex unlocked here
         
         // 2. If not in cache, try direct lookup using the __thiscall function
         if (m_objectManagerPtr && m_getObjectPtrByGuidInner) {
@@ -249,17 +259,46 @@ std::shared_ptr<WowPlayer> ObjectManager::GetLocalPlayer() {
         }
     }
     // 3. Fallback: If direct reads failed, try searching the current cache (less reliable)
-    auto players = GetObjectsByType(OBJECT_PLAYER);
-    return !players.empty() ? std::static_pointer_cast<WowPlayer>(players[0]) : nullptr;
+    //    GetObjectsByType already locks, so no extra lock needed if we call it.
+    //    However, let's implement the search directly here to avoid recursive locking issues if GetObjectsByType changes.
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        for (const auto& pair : m_objectCache) {
+            if (pair.second && pair.second->GetType() == OBJECT_PLAYER) {
+                return std::static_pointer_cast<WowPlayer>(pair.second);
+            }
+        }
+    }
+    return nullptr; // No player found
 }
 
-// Get all objects - Returns the map
+// Helper for GetLocalPlayer to avoid re-locking mutex
+std::shared_ptr<WowObject> ObjectManager::GetObjectByGUID_locked(WGUID guid) {
+    // Assumes m_cacheMutex is ALREADY locked by the caller
+    auto it = m_objectCache.find(guid);
+    return (it != m_objectCache.end()) ? it->second : nullptr;
+}
+
+// Get all objects (non-const version)
 std::map<WGUID, std::shared_ptr<WowObject>> ObjectManager::GetObjects() {
-    return m_objectCache; 
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
+    return m_objectCache; // Return a copy
+}
+
+// Get all objects (const version, returns a copy for thread safety)
+std::map<WGUID, std::shared_ptr<WowObject>> ObjectManager::GetObjects() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(m_cacheMutex)); // Need const_cast for const method
+    return m_objectCache; // Return a copy
+}
+
+// Get local player GUID
+WGUID ObjectManager::GetLocalPlayerGUID() const {
+    return m_localPlayerGuid; // Assuming WGUID read is atomic
 }
 
 // Find objects by name
 std::vector<std::shared_ptr<WowObject>> ObjectManager::FindObjectsByName(const std::string& name) {
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
     std::vector<std::shared_ptr<WowObject>> results;
     if (name.empty()) return results;
 
@@ -282,6 +321,7 @@ std::vector<std::shared_ptr<WowObject>> ObjectManager::FindObjectsByName(const s
 
 // Get nearest object of a type
 std::shared_ptr<WowObject> ObjectManager::GetNearestObject(WowObjectType type, float maxDistance) {
+    // GetLocalPlayer handles its own locking
     auto player = GetLocalPlayer();
     if (!player) return nullptr;
     
@@ -291,6 +331,8 @@ std::shared_ptr<WowObject> ObjectManager::GetNearestObject(WowObjectType type, f
     std::shared_ptr<WowObject> nearest = nullptr;
     float nearestDistSq = maxDistance * maxDistance; // Compare squared distances
     
+    // Need to lock here to iterate over the cache
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
     for (const auto& pair : m_objectCache) {
         if (!pair.second || pair.second->GetType() != type) continue;
         
@@ -310,32 +352,45 @@ std::shared_ptr<WowObject> ObjectManager::GetNearestObject(WowObjectType type, f
     return nearest;
 }
 
-// Implementation for GetLocalPlayerGUID
-uint64_t ObjectManager::GetLocalPlayerGUID() const {
-    // Directly return the cached member variable
-    // TryFinishInitialization or Update should keep this up-to-date
-    return GuidToUint64(m_localPlayerGuid); // Convert WGUID to uint64_t
+// Returns the underlying pointer to the actual game object manager
+ObjectManagerActual* ObjectManager::GetInternalObjectManagerPtr() const {
+    return m_objectManagerPtr;
 }
 
 // Add implementation for GetCurrentTargetGUID
-const DWORD ADDR_CurrentTargetGUID = 0x00BD07B0; // Global variable address
-
 uint64_t ObjectManager::GetCurrentTargetGUID() const {
+    constexpr uintptr_t ADDR_CurrentTargetGUID = 0x00BD07B0; // Address found in spells_tab.cpp
     try {
-        // Read the 64-bit GUID from the global address
-        uint64_t targetGuid = MemoryReader::Read<uint64_t>(ADDR_CurrentTargetGUID);
-        return targetGuid;
-    } catch (const std::runtime_error& /*e*/) {
-        // Log error if needed, but avoid spamming
-        // static bool errorLogged = false;
-        // if (!errorLogged) { 
-        //     LogStream ssErr; ssErr << "ObjectManager::GetCurrentTargetGUID Error: " << e.what();
-        //     LogMessage(ssErr.str());
-        //     errorLogged = true; // Log only once
-        // }
-        return 0; // Return 0 on error
+        // Use MemoryReader to read the GUID directly from the game memory
+        return MemoryReader::Read<uint64_t>(ADDR_CurrentTargetGUID);
+    } catch (const std::exception& e) {
+        // Log the error if the read fails
+        LogStream ssErr; ssErr << "ObjectManager::GetCurrentTargetGUID EXCEPTION reading 0x" << std::hex << ADDR_CurrentTargetGUID << ": " << e.what();
+        LogMessage(ssErr.str());
+        return 0; // Return 0 if read fails
     } catch (...) {
-        // Log error if needed, but avoid spamming
-        return 0; // Return 0 on error
+        LogStream ssErr; ssErr << "ObjectManager::GetCurrentTargetGUID Unknown EXCEPTION reading 0x" << std::hex << ADDR_CurrentTargetGUID;
+        LogMessage(ssErr.str());
+        return 0; // Return 0 on unknown exception
     }
+}
+
+// Get objects within a certain distance
+std::vector<std::shared_ptr<WowObject>> ObjectManager::GetObjectsWithinDistance(const Vector3& center, float distance) {
+    std::vector<std::shared_ptr<WowObject>> results; // Declare results
+    float distSqThreshold = distance * distance;
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
+    for (const auto& pair : m_objectCache) {
+        if (pair.second) { // Check if object exists
+            Vector3 objPos = pair.second->GetPosition(); // Assuming GetPosition is available and reads directly
+            float dx = center.x - objPos.x;
+            float dy = center.y - objPos.y;
+            float dz = center.z - objPos.z;
+            float distSq = dx*dx + dy*dy + dz*dz;
+            if (distSq <= distSqThreshold) {
+                results.push_back(pair.second);
+            }
+        }
+    }
+    return results;
 }

@@ -381,17 +381,23 @@ bool BotController::loadRotationByName(const std::string& name) {
                 }
                 if (c == '"') {
                     inString = !inString;
-                    if (braceLevel > 1) currentObject << c; 
+                    // Always append quotes if within the main object structure (braceLevel > 0)
+                    if (braceLevel > 0) currentObject << c; 
                 } else if (!inString) {
                     if (c == '{') {
-                        if (braceLevel == 1) currentObject.str(std::string()); 
+                        if (braceLevel == 1) currentObject.str(std::string()); // Clear stream for new object
                         braceLevel++;
-                        if (braceLevel > 1) currentObject << c; 
+                        currentObject << c; // ALWAYS append '{'
                     } else if (c == '}') {
-                        if (braceLevel > 1) currentObject << c; 
+                        currentObject << c; // ALWAYS append '}'
                         braceLevel--;
-                        if (braceLevel == 1) { // Finished an object
+                        // Check if we just finished an object INSIDE the main array (level is back to 0)
+                        if (braceLevel == 0 && !currentObject.str().empty()) { // Finished an object, ensure stream wasn't just cleared
                             std::string objStr = currentObject.str();
+                            // --- Add Debug Logging ---
+                            LogStream ssDebugParse; ssDebugParse << "DEBUG JSON PARSE: Raw object string: [" << objStr << "]"; LogMessage(ssDebugParse.str());
+                            // --- End Debug Logging ---
+                            
                             // Initialize with defaults
                             RotationStep currentStep;
                             currentStep.spellId = 0;
@@ -441,6 +447,9 @@ bool BotController::loadRotationByName(const std::string& name) {
                                 }
                                 
                                 // --- Assign based on key (Updated) --- 
+                                // +++ Add Key/Value Log +++
+                                LogStream ssKVLog; ssKVLog << "DEBUG JSON PARSE KV: Key='" << key << "', Raw Value='" << valueStr << "'"; LogMessage(ssKVLog.str());
+                                // ++++++++++++++++++++++++
                                 try {
                                     if (key == "spellId") {
                                         currentStep.spellId = std::stoul(valueStr);
@@ -476,13 +485,17 @@ bool BotController::loadRotationByName(const std::string& name) {
                                 if (currentPos == std::string::npos) break;
                             }
                             // Add the parsed step
+                            // --- Add Debug Logging ---
+                            LogStream ssDebugStep; ssDebugStep << "DEBUG JSON PARSE: Parsed Step -> ID: " << currentStep.spellId << ", Name: '" << currentStep.spellName << "'"; LogMessage(ssDebugStep.str());
+                            // --- End Debug Logging ---
                             loadedRotation.push_back(currentStep);
                         } // End object parsing
-                    } else if (braceLevel > 1 && !std::isspace(c)) { 
+                    } else if (braceLevel > 0 && !std::isspace(c)) { // Append other non-brace, non-whitespace characters ONLY if we are inside braces (level > 0)
                         currentObject << c;
                     }
                 } else { // Inside string
-                     if (braceLevel > 1) currentObject << c; 
+                     // Append character if inside braces (level > 0)
+                     if (braceLevel > 0) currentObject << c; 
                 }
             } // End char loop
         } // End line loop
@@ -519,6 +532,16 @@ uint64_t BotController::getAndClearRequestedTarget() {
 }
 // --- End Target Request --- 
 
+// --- Spell Cast Request Implementation --- 
+void BotController::requestCastSpell(uint32_t spellId) {
+    m_requestedSpellId.store(spellId);
+}
+
+uint32_t BotController::getAndClearRequestedSpell() {
+    return m_requestedSpellId.exchange(0);
+}
+// --- End Spell Cast Request --- 
+
 void BotController::run() {
     // LogMessage("BotController::run() loop started."); // Can be noisy if called every frame
     try {
@@ -537,6 +560,22 @@ void BotController::run() {
                 // REMOVED: std::this_thread::sleep_for(std::chrono::milliseconds(50)); 
             }
             // --- END Target Request --- 
+
+            // --- Process Spell Cast Request --- 
+            uint32_t requestedSpellId = getAndClearRequestedSpell();
+            if (requestedSpellId != 0) {
+                // Need the current target GUID from the game
+                uint64_t currentTargetGuid = 0;
+                try {
+                    currentTargetGuid = MemoryReader::Read<uint64_t>(0x00BD07B0); // Read current target GUID
+                } catch (...) { /* Handle error if needed */ }
+                
+                // Use SpellManager instance to cast (passing default 0 for unknown args)
+                if (m_spellManager) { // Ensure SpellManager is valid
+                    m_spellManager->CastSpell(requestedSpellId, currentTargetGuid, 0, 0);
+                }
+            }
+            // --- END Spell Cast Request ---
 
             // Other main thread logic (e.g., state updates, GUI updates)
             if (m_currentEngine) {

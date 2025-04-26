@@ -29,7 +29,7 @@ public:
 
     // Function to cast a spell using the local player
     // targetGuid = 0 means self-cast or no target needed
-    // unknownIntArg1 and unknownCharArg based on assembly, default to 0
+    // Reverted to 4-argument signature based on disassembly
     bool CastSpell(int spellId, uint64_t targetGuid = 0, int unknownIntArg1 = 0, char unknownCharArg = 0);
 
     // Function to read the spellbook from game memory
