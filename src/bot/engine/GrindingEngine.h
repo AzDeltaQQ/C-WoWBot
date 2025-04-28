@@ -26,6 +26,7 @@ public:
         FINDING_TARGET, // Looking for nearby suitable enemies
         MOVING_TO_TARGET, // Moving towards the selected target if out of range/LOS
         COMBAT,         // Actively fighting the target
+        LOOTING,        // Moving to and interacting with a corpse
         RECOVERING,     // Eating/Drinking/Waiting after combat
         ERROR_STATE     // An unrecoverable error occurred
     };
@@ -52,6 +53,7 @@ private:
     void handleFindingTarget();
     void handleMovingToTarget();
     void handleCombat();
+    void handleLooting();
     void handleRecovering();
 
     bool selectBestTarget(); // Logic to find and target an enemy
@@ -76,6 +78,7 @@ private:
     int m_currentRotationIndex = 0; // Index for iterating through rotation
     uint64_t m_lastFailedTargetGuid = 0; // Track last GUID that TargetUnitByGuid failed on
     DWORD m_combatStartTime = 0; // Track combat duration
+    float m_effectiveCombatRange = 5.0f; // Calculated based on rotation spells
 
     // Pathing state
     int m_currentPathIndex = -1; // -1 indicates no active path segment

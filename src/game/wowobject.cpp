@@ -22,6 +22,8 @@ constexpr DWORD UNIT_FIELD_MAXHEALTH_OFFSET = 0x20 * 4;
 constexpr DWORD UNIT_FIELD_LEVEL_OFFSET = 0x36 * 4;
 constexpr DWORD UNIT_FIELD_FLAGS_OFFSET = 0x3B * 4;
 constexpr DWORD UNIT_FIELD_POWTYPE_OFFSET = 0x5F; // Offset of Power Type within UNIT_FIELD_BYTES_0 (0x17*4 + 3)
+// Add Dynamic Flags offset (WotLK 3.3.5)
+constexpr DWORD UNIT_FIELD_DYNAMIC_FLAGS_OFFSET = 0x13C; // 0x4F*4 = 316 = 0x13C
 // Power offsets (relative to UnitFields base)
 constexpr DWORD UNIT_FIELD_POWER_BASE = 0x19 * 4; // Was 0x4C, enum UNIT_FIELD_POWER1 = 0x19
 constexpr DWORD UNIT_FIELD_MAXPOWER_BASE = 0x21 * 4; // Was 0x6C, enum UNIT_FIELD_MAXPOWER1 = 0x21
@@ -153,20 +155,20 @@ std::string WowObject::GetName() {
 }
 
 // Interact still likely needs direct VTable call
-bool WowObject::Interact() {
-    if (!m_pointer) return false;
+void WowObject::Interact() {
+    if (!m_pointer) return;
     try {
-        typedef bool (__thiscall* InteractFunc)(void* thisptr);
+        typedef void (__thiscall* InteractFunc)(void* thisptr);
         void** vftable = MemoryReader::Read<void**>(reinterpret_cast<uintptr_t>(m_pointer));
-        if (!vftable) return false;
+        if (!vftable) return;
         
         uintptr_t funcAddr = MemoryReader::Read<uintptr_t>(reinterpret_cast<uintptr_t>(&vftable[VFTableIndex::VF_Interact]));
-        if (!funcAddr) return false;
+        if (!funcAddr) return;
 
         InteractFunc func = reinterpret_cast<InteractFunc>(funcAddr);
-        return func(m_pointer);
+        func(m_pointer); 
     } catch (...) {
-        return false;
+        return;
     }
 }
 
@@ -175,6 +177,23 @@ bool WowObject::Interact() {
 
 // Constructor
 WowUnit::WowUnit(void* ptr, WGUID guid) : WowObject(ptr, guid, OBJECT_UNIT) {}
+
+// Implement IsLootable
+bool WowUnit::IsLootable() {
+    if (!m_pointer) return false;
+    try {
+        uintptr_t unitFieldsPtrAddr = reinterpret_cast<uintptr_t>(m_pointer) + OBJECT_UNIT_FIELDS_PTR_OFFSET;
+        uintptr_t unitFieldsPtr = MemoryReader::Read<uintptr_t>(unitFieldsPtrAddr);
+        if (!unitFieldsPtr) return false;
+
+        uint32_t dynamicFlags = MemoryReader::Read<uint32_t>(unitFieldsPtr + UNIT_FIELD_DYNAMIC_FLAGS_OFFSET);
+        constexpr uint32_t UNIT_DYNFLAG_LOOTABLE = 0x8;
+        return (dynamicFlags & UNIT_DYNFLAG_LOOTABLE) != 0;
+    } catch (...) {
+        LogStream ssErr; ssErr << "!!! IsLootable FAILED !!!"; LogMessage(ssErr.str());
+        return false;
+    }
+}
 
 // Update dynamic data for Unit
 void WowUnit::UpdateDynamicData() {

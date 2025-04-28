@@ -126,7 +126,7 @@ public:
     }
 
     // Common methods (Interact might still call VTable directly or be updated)
-    bool Interact();
+    void Interact();
 };
 
 // Specialized Unit class (for players, NPCs, etc.)
@@ -197,6 +197,9 @@ public:
     bool IsCasting() const { return m_cachedCastingSpellId != 0; }
     bool IsChanneling() const { return m_cachedChannelSpellId != 0; }
     std::string GetPowerTypeString() const; // Helper to convert type byte to string
+
+    // Add IsLootable method
+    bool IsLootable();
 };
 
 // Specialized Player class

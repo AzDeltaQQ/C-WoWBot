@@ -12,6 +12,7 @@
 #include <thread> // Include for std::thread
 #include <chrono> // For sleep
 #include <cmath>  // For std::sqrt
+#include <algorithm> // For std::max
 
 // Constructor - Get necessary pointers
 GrindingEngine::GrindingEngine(BotController* controller, ObjectManager* objectManager)
@@ -76,7 +77,7 @@ void GrindingEngine::run() {
 
 // Central state machine logic
 void GrindingEngine::updateState() {
-    if (!m_objectManager || !m_botController || !m_spellManager ) { // Check SpellManager too
+    if (!m_objectManager || !m_botController || !m_spellManager ) {
          LogMessage("GrindingEngine Error: Core components missing.");
          m_grindState = GrindState::ERROR_STATE;
          return;
@@ -85,21 +86,51 @@ void GrindingEngine::updateState() {
      // --- Global Checks --- 
      // TODO: Add recovery check based on player health/mana
 
-    // Get current target GUID from the game state FIRST
-    m_currentTargetGuid = m_objectManager->GetCurrentTargetGUID(); 
+    // Get current target GUID from the game state
+    uint64_t currentTargetGuidInGame = m_objectManager->GetCurrentTargetGUID(); 
+    uint64_t knownTargetGuid = GuidToUint64(m_targetUnitPtr ? m_targetUnitPtr->GetGUID() : WGUID{0,0});
     
-    // --- Pointer Update Logic --- 
-    // Only update the pointer if the state *isn't* COMBAT, 
-    // or if the game target changed unexpectedly while in combat.
-    // COMBAT state will manage its own pointer check.
-    if (m_grindState != GrindState::COMBAT || m_currentTargetGuid != GuidToUint64(m_targetUnitPtr ? m_targetUnitPtr->GetGUID() : WGUID{0,0})) {
-        m_targetUnitPtr = nullptr; // Reset pointer if not in combat or target changed
-        if (m_currentTargetGuid != 0) {
-            std::shared_ptr<WowObject> tempTargetBase = m_objectManager->GetObjectByGUID(m_currentTargetGuid);
-            m_targetUnitPtr = std::dynamic_pointer_cast<WowUnit>(tempTargetBase);
+    // --- Refined Pointer Update Logic --- 
+    bool shouldClearPointer = false;
+
+    // Condition 1: We are NOT in COMBAT or LOOTING, and the game target differs from our known target.
+    if (m_grindState != GrindState::COMBAT && m_grindState != GrindState::LOOTING) {
+        if (currentTargetGuidInGame != knownTargetGuid) {
+            shouldClearPointer = true;
         }
     }
-    // --- End Pointer Update Logic ---
+    // Condition 2: We ARE in COMBAT, but the game target changed to something *else* (not just cleared to 0).
+    else if (m_grindState == GrindState::COMBAT) {
+        if (currentTargetGuidInGame != 0 && currentTargetGuidInGame != knownTargetGuid) {
+             shouldClearPointer = true;
+        }
+        // NOTE: We explicitly DO NOT clear if currentTargetGuidInGame is 0 while in COMBAT,
+        // as this likely means the target died, and we want handleCombat to check it.
+    }
+    // Condition 3: Always clear if our known pointer is non-null but the object is gone from the manager
+    // (This check might be redundant if GetObjectByGUID handles it, but adds safety)
+    if (m_targetUnitPtr && !m_objectManager->GetObjectByGUID(knownTargetGuid)) {
+        LogStream ssInvalid; ssInvalid << "GrindingEngine UpdateState: Known target pointer (GUID " << std::hex << knownTargetGuid << ") seems invalid/gone from manager. Clearing pointer.";
+        LogMessage(ssInvalid.str());
+        shouldClearPointer = true; 
+    }
+
+    // Apply pointer update if needed
+    if (shouldClearPointer) {
+        m_targetUnitPtr = nullptr;
+        knownTargetGuid = 0; // Update known GUID since pointer is cleared
+        // If pointer was cleared, try to re-acquire based on current game target if it's valid
+        if (currentTargetGuidInGame != 0) {
+            std::shared_ptr<WowObject> tempTargetBase = m_objectManager->GetObjectByGUID(currentTargetGuidInGame);
+            m_targetUnitPtr = std::dynamic_pointer_cast<WowUnit>(tempTargetBase);
+             // Update knownTargetGuid after potential re-acquire
+             knownTargetGuid = GuidToUint64(m_targetUnitPtr ? m_targetUnitPtr->GetGUID() : WGUID{0,0}); 
+        }
+    }
+    // --- End Refined Pointer Update Logic ---
+
+    // Store the potentially updated game target GUID for use in states
+    m_currentTargetGuid = currentTargetGuidInGame; 
 
     switch (m_grindState) {
         case GrindState::IDLE:
@@ -112,6 +143,25 @@ void GrindingEngine::updateState() {
                 m_grindState = GrindState::COMBAT;
                 m_combatStartTime = GetTickCount();
                 m_currentRotationIndex = 0; 
+                
+                // --- Calculate Effective Combat Range --- 
+                const auto& rotation = m_botController->getCurrentRotation();
+                float maxRange = 0.0f;
+                if (!rotation.empty()) {
+                    for(const auto& step : rotation) {
+                        if (step.castRange > maxRange) {
+                            maxRange = step.castRange;
+                        }
+                    }
+                    // Set effective range slightly less than max, but at least melee
+                    m_effectiveCombatRange = (std::max)(5.0f, maxRange - 4.0f); // Increased buffer
+                } else {
+                    m_effectiveCombatRange = 5.0f; // Default to melee if no rotation
+                }
+                LogStream ssRange; ssRange << "GrindingEngine: Setting Effective Combat Range to " << m_effectiveCombatRange << " (Max Spell Range: " << maxRange << ")";
+                LogMessage(ssRange.str());
+                // --- End Calculate Range ---
+
             } else if (m_currentTargetGuid != 0) {
                  // We have a GUID, but the object isn't in cache or isn't a WowUnit yet.
                  // Stay in CHECK_STATE to wait for ObjectManager update.
@@ -133,6 +183,25 @@ void GrindingEngine::updateState() {
                  m_grindState = GrindState::COMBAT;
                  m_combatStartTime = GetTickCount();
                  m_currentRotationIndex = 0;
+
+                // --- Calculate Effective Combat Range --- 
+                const auto& rotation_pathing = m_botController->getCurrentRotation();
+                float maxRange_pathing = 0.0f;
+                if (!rotation_pathing.empty()) {
+                    for(const auto& step : rotation_pathing) {
+                        if (step.castRange > maxRange_pathing) {
+                            maxRange_pathing = step.castRange;
+                        }
+                    }
+                    // Set effective range slightly less than max, but at least melee
+                    m_effectiveCombatRange = (std::max)(5.0f, maxRange_pathing - 4.0f); // Increased buffer
+                } else {
+                    m_effectiveCombatRange = 5.0f; // Default to melee if no rotation
+                }
+                LogStream ssRangePath; ssRangePath << "GrindingEngine: Setting Effective Combat Range to " << m_effectiveCombatRange << " (Max Spell Range: " << maxRange_pathing << ")";
+                LogMessage(ssRangePath.str());
+                // --- End Calculate Range ---
+
             } else {
                 // No valid target yet, continue pathing and checking
                 handlePathing();    // Move along the path
@@ -141,7 +210,11 @@ void GrindingEngine::updateState() {
             break;
 
         case GrindState::COMBAT:
-            handleCombat(); // Will transition back to CHECK_STATE if target lost/dies
+            handleCombat(); // Will transition back to CHECK_STATE or LOOTING if target lost/dies
+            break;
+
+        case GrindState::LOOTING:
+            handleLooting(); // Handle moving to and looting the corpse
             break;
 
         case GrindState::RECOVERING:
@@ -377,60 +450,160 @@ void GrindingEngine::handleMovingToTarget() {
 }
 
 void GrindingEngine::handleCombat() {
-    // --- Check Game Target GUID --- 
-    uint64_t gameCurrentTargetGuid = m_objectManager->GetCurrentTargetGUID();
-    
-    // If game has no target, or our initial GUID doesn't match, exit combat.
-    if (gameCurrentTargetGuid == 0 || gameCurrentTargetGuid != m_currentTargetGuid) {
-        LogMessage("GrindingEngine handleCombat: Target lost or changed externally (GUID mismatch). Exiting Combat.");
-        m_targetUnitPtr = nullptr; // Clear pointer just in case
-        m_currentTargetGuid = 0;
-        m_lastFailedTargetGuid = 0; // Reset failed target
+    if (!m_targetUnitPtr || !m_objectManager) {
+        LogMessage("GrindingEngine COMBAT: Target pointer or ObjectManager is null. Exiting combat state.");
+        m_targetUnitPtr = nullptr;
         m_grindState = GrindState::CHECK_STATE;
         return;
     }
-    // --- GUID is still valid in game --- 
 
-    // --- Face the Target (ensure we do this early) --- 
-    MovementController::GetInstance().FaceTarget(m_currentTargetGuid);
-    // --- End Face Target ---
+    // Check if target is still valid and in the object manager cache
+    uint64_t currentTargetGuidInGame = m_objectManager->GetCurrentTargetGUID();
+    uint64_t myTargetGuid = GuidToUint64(m_targetUnitPtr->GetGUID());
 
-    // --- Re-fetch and Validate Pointer BEFORE IsDead Check --- 
-    std::shared_ptr<WowObject> tempTargetBase_DeadCheck = m_objectManager->GetObjectByGUID(gameCurrentTargetGuid);
-    std::shared_ptr<WowUnit> targetUnit_DeadCheck = std::dynamic_pointer_cast<WowUnit>(tempTargetBase_DeadCheck);
-    if (!targetUnit_DeadCheck) {
-        LogMessage("GrindingEngine handleCombat: ERROR - Failed to get valid target pointer before IsDead check. Exiting Combat.");
+    // 1. Check if target is dead
+    if (m_targetUnitPtr->IsDead()) {
+        LogStream ss; ss << "GrindingEngine COMBAT: Target " << myTargetGuid << " is dead.";
+        LogMessage(ss.str());
+
+        // Check if lootable AND if looting is enabled in BotController
+        bool shouldLoot = m_botController->isLootingEnabled(); // Get setting
+        if (shouldLoot && m_targetUnitPtr->IsLootable()) { 
+            LogMessage("GrindingEngine COMBAT: Target is lootable and looting enabled. Entering LOOTING state.");
+            m_grindState = GrindState::LOOTING;
+            // Keep m_targetUnitPtr pointing to the corpse for looting
+            return; // Exit handleCombat, proceed to LOOTING state
+        } else {
+             if (!shouldLoot) {
+                  LogMessage("GrindingEngine COMBAT: Target is dead, but looting is disabled. Skipping loot.");
+             } else { // implies !m_targetUnitPtr->IsLootable()
+                  LogMessage("GrindingEngine COMBAT: Target is dead but not lootable. Skipping loot.");
+             }
+            TargetUnitByGuid(0); // Clear target in game
+            m_targetUnitPtr = nullptr;
+            m_grindState = GrindState::CHECK_STATE;
+            return;
+        }
+    }
+
+    // 2. Check if target GUID changed in game (e.g., player tabbed)
+    if (currentTargetGuidInGame != myTargetGuid) {
+        LogStream ss; ss << "GrindingEngine COMBAT: Target changed in game (Now: " << currentTargetGuidInGame << "). Resetting.";
+        LogMessage(ss.str());
+        // We lost our target, clear pointer and go check state
         m_targetUnitPtr = nullptr; 
-        m_currentTargetGuid = 0; 
-        m_lastFailedTargetGuid = gameCurrentTargetGuid; 
         m_grindState = GrindState::CHECK_STATE;
         return;
     }
-    // Use the freshly fetched pointer for the check
-    if (targetUnit_DeadCheck->IsDead()) { 
-        LogMessage("GrindingEngine handleCombat: Target died or invalid (using IsDead). Exiting Combat.");
-        m_targetUnitPtr = nullptr; 
-        m_currentTargetGuid = 0;
-        m_lastFailedTargetGuid = 0; 
-        m_grindState = GrindState::CHECK_STATE; 
-        return;
-    }
-    // --- Target is Alive --- 
 
-    // --- Re-fetch and Validate Pointer BEFORE Casting --- 
-    std::shared_ptr<WowObject> tempTargetBase_CastCheck = m_objectManager->GetObjectByGUID(gameCurrentTargetGuid);
-    m_targetUnitPtr = std::dynamic_pointer_cast<WowUnit>(tempTargetBase_CastCheck); // Update the member pointer here
-    if (!m_targetUnitPtr) {
-        LogMessage("GrindingEngine handleCombat: ERROR - Failed to get valid target pointer before casting. Exiting Combat.");
-        m_currentTargetGuid = 0; 
-        m_lastFailedTargetGuid = gameCurrentTargetGuid; 
+    // 3. Check if the target pointer itself became invalid somehow (e.g., object removed from manager)
+    if (!m_objectManager->GetObjectByGUID(myTargetGuid)) {
+        LogStream ss; ss << "GrindingEngine COMBAT: Target " << myTargetGuid << " no longer found in ObjectManager. Resetting.";
+        LogMessage(ss.str());
+        TargetUnitByGuid(0); // Clear target in game
+        m_targetUnitPtr = nullptr;
         m_grindState = GrindState::CHECK_STATE;
         return;
     }
-    // --- Pointer is valid for casting --- 
 
-    // --- Execute Rotation --- (Will still warn if empty)
-    castSpellFromRotation(); 
+    // --- Target is alive and still targeted, proceed with combat --- 
+
+    // Get player and target positions
+    // Get player position directly
+    std::shared_ptr<WowPlayer> player_combat = m_objectManager->GetLocalPlayer();
+    Vector3 playerPos;
+    if (!player_combat) {
+        LogMessage("GrindingEngine COMBAT: Failed to get player object. Skipping combat step.");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return;
+    }
+    void* playerPtr_combat = player_combat->GetPointer();
+    if (!playerPtr_combat) {
+        LogMessage("GrindingEngine COMBAT: Failed to get player pointer. Skipping combat step.");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return;
+    }
+    try {
+        uintptr_t baseAddr = reinterpret_cast<uintptr_t>(playerPtr_combat);
+        playerPos.x = MemoryReader::Read<float>(baseAddr + 0x79C); // Use literal offset
+        playerPos.y = MemoryReader::Read<float>(baseAddr + 0x798); // Use literal offset
+        playerPos.z = MemoryReader::Read<float>(baseAddr + 0x7A0); // Use literal offset
+    } catch (...) {
+        LogMessage("GrindingEngine COMBAT: Failed to read player position. Skipping combat step.");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return;
+    }
+    // End get player position
+
+    // Get target position directly (bypassing cache)
+    Vector3 targetPos;
+    void* targetPtr_combat = m_targetUnitPtr->GetPointer();
+    if (!targetPtr_combat) {
+        LogMessage("GrindingEngine COMBAT: Failed to get target pointer. Skipping combat step.");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Maybe reset state here?
+        m_targetUnitPtr = nullptr;
+        m_grindState = GrindState::CHECK_STATE;
+        return;
+    }
+    try {
+        uintptr_t baseAddr = reinterpret_cast<uintptr_t>(targetPtr_combat);
+        targetPos.x = MemoryReader::Read<float>(baseAddr + 0x79C); // Use literal offset
+        targetPos.y = MemoryReader::Read<float>(baseAddr + 0x798); // Use literal offset
+        targetPos.z = MemoryReader::Read<float>(baseAddr + 0x7A0); // Use literal offset
+    } catch (...) {
+        LogMessage("GrindingEngine COMBAT: Failed to read target position. Skipping combat step.");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Maybe reset state here?
+        m_targetUnitPtr = nullptr;
+        m_grindState = GrindState::CHECK_STATE;
+        return;
+    }
+    // End get target position
+
+    // Calculate 3D distance
+    float dx = playerPos.x - targetPos.x;
+    float dy = playerPos.y - targetPos.y;
+    float dz = playerPos.z - targetPos.z;
+    float distanceSq = dx*dx + dy*dy + dz*dz;
+    float distance = std::sqrt(distanceSq); 
+
+    // Ranges are now determined by m_effectiveCombatRange calculated on combat entry
+
+    // 1. Check if target is outside effective combat range
+    if (distance > m_effectiveCombatRange) { 
+        LogStream ss; ss << "GrindingEngine COMBAT: Target distance (" << distance << ") > Effective Range (" << m_effectiveCombatRange << "). Moving closer.";
+        LogMessage(ss.str());
+        MovementController::GetInstance().ClickToMove(targetPos, playerPos); // Move towards target
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Short delay while moving
+        return; // Stay in COMBAT state, but don't cast yet
+    }
+    // Optional: Add kiting logic here if needed later
+    // else if (distance < MIN_PULL_RANGE) { ... handle kiting ... }
+
+    // 2. Target is within effective combat range
+    else {
+        LogStream ss; ss << "GrindingEngine COMBAT: Target distance (" << distance << ") <= Effective Range (" << m_effectiveCombatRange << "). Stopping and Engaging.";
+        LogMessage(ss.str());
+
+        // Stop moving
+        MovementController::GetInstance().Stop(); 
+        
+        // Face the target (Convert WGUID to uint64_t)
+        MovementController::GetInstance().FaceTarget(GuidToUint64(m_targetUnitPtr->GetGUID()));
+
+        // --- In range and facing, execute combat rotation --- 
+        castSpellFromRotation();
+    }
+
+    // Timeout check (e.g., 60 seconds)
+    if (GetTickCount() - m_combatStartTime > 60000) {
+        LogMessage("GrindingEngine COMBAT: Combat timeout reached. Resetting.");
+        TargetUnitByGuid(0); // Clear target
+        m_targetUnitPtr = nullptr;
+        m_grindState = GrindState::CHECK_STATE;
+        return;
+    }
 }
 
 void GrindingEngine::castSpellFromRotation() {
@@ -604,4 +777,155 @@ void GrindingEngine::handleRecovering() {
     LogMessage("GrindingEngine: Recovering (Not Implemented). Will transition back to check state.");
     std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Short delay before checking again
     m_grindState = GrindState::CHECK_STATE;
+}
+
+// --- New State Handler Implementation ---
+
+void GrindingEngine::handleLooting() {
+    const float LOOT_DISTANCE_THRESHOLD = 4.0f; // How close to get before interacting
+    const float LOOT_DISTANCE_THRESHOLD_SQ = LOOT_DISTANCE_THRESHOLD * LOOT_DISTANCE_THRESHOLD;
+
+    if (!m_targetUnitPtr || !m_objectManager) {
+        LogMessage("GrindingEngine LOOTING: Corpse pointer or ObjectManager is null. Back to CHECK_STATE.");
+        m_targetUnitPtr = nullptr;
+        m_grindState = GrindState::CHECK_STATE;
+        return;
+    }
+
+    // Ensure the object is still targetable (corpses are often still WowUnit)
+    // We keep the pointer from combat, so it should still be a WowUnit initially.
+    // A check like IsDead should have already happened in combat handler.
+
+    // Get player position directly
+    std::shared_ptr<WowPlayer> player_loot = m_objectManager->GetLocalPlayer();
+    Vector3 playerPos = {0,0,0};
+     if (!player_loot) {
+        LogMessage("GrindingEngine LOOTING: Failed to get player object. Skipping loot step.");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return;
+    }
+    void* playerPtr_loot = player_loot->GetPointer();
+    if (!playerPtr_loot) {
+        LogMessage("GrindingEngine LOOTING: Failed to get player pointer. Skipping loot step.");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return;
+    }
+    try {
+        uintptr_t baseAddr = reinterpret_cast<uintptr_t>(playerPtr_loot);
+        constexpr DWORD OBJECT_POS_X_OFFSET = 0x79C;
+        constexpr DWORD OBJECT_POS_Y_OFFSET = 0x798;
+        constexpr DWORD OBJECT_POS_Z_OFFSET = 0x7A0;
+        playerPos.x = MemoryReader::Read<float>(baseAddr + OBJECT_POS_X_OFFSET); 
+        playerPos.y = MemoryReader::Read<float>(baseAddr + OBJECT_POS_Y_OFFSET); 
+        playerPos.z = MemoryReader::Read<float>(baseAddr + OBJECT_POS_Z_OFFSET); 
+    } catch (...) {
+        LogMessage("GrindingEngine LOOTING: Failed to read player position. Skipping loot step.");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return;
+    }
+    // End get player position
+
+    // Get corpse position DIRECTLY from memory
+    Vector3 corpsePos = {0,0,0};
+    void* corpsePtr = m_targetUnitPtr->GetPointer();
+    if (!corpsePtr) {
+        LogMessage("GrindingEngine LOOTING: Failed to get corpse pointer. Aborting loot.");
+        m_targetUnitPtr = nullptr;
+        m_grindState = GrindState::CHECK_STATE;
+        return;
+    }
+    try {
+        uintptr_t baseAddr = reinterpret_cast<uintptr_t>(corpsePtr);
+        constexpr DWORD OBJECT_POS_X_OFFSET = 0x79C;
+        constexpr DWORD OBJECT_POS_Y_OFFSET = 0x798;
+        constexpr DWORD OBJECT_POS_Z_OFFSET = 0x7A0;
+        corpsePos.x = MemoryReader::Read<float>(baseAddr + OBJECT_POS_X_OFFSET); 
+        corpsePos.y = MemoryReader::Read<float>(baseAddr + OBJECT_POS_Y_OFFSET); 
+        corpsePos.z = MemoryReader::Read<float>(baseAddr + OBJECT_POS_Z_OFFSET); 
+        // Basic validation: Check if position seems reasonable (not exactly 0,0,0 unless it's truly there)
+        if (corpsePos.x == 0.0f && corpsePos.y == 0.0f && corpsePos.z == 0.0f) {
+             LogMessage("GrindingEngine LOOTING: Warning - Read corpse position as (0,0,0). Might be invalid. Proceeding cautiously.");
+             // Optionally, abort if 0,0,0 is always invalid in your context
+             // m_targetUnitPtr = nullptr;
+             // m_grindState = GrindState::CHECK_STATE;
+             // return;
+        }
+    } catch (...) {
+        LogMessage("GrindingEngine LOOTING: Failed to read corpse position. Aborting loot.");
+        m_targetUnitPtr = nullptr;
+        m_grindState = GrindState::CHECK_STATE;
+        return;
+    }
+    // End get corpse position
+
+    // Calculate distance squared using DIRECTLY READ positions
+    float dx = playerPos.x - corpsePos.x;
+    float dy = playerPos.y - corpsePos.y;
+    float dz = playerPos.z - corpsePos.z;
+    float distanceSq = dx*dx + dy*dy + dz*dz;
+
+    if (distanceSq > LOOT_DISTANCE_THRESHOLD_SQ) {
+        // Too far, move closer using the DIRECTLY READ corpse position
+        LogStream ss; ss << "GrindingEngine LOOTING: Moving to corpse. Distance: " << std::sqrt(distanceSq);
+        LogMessage(ss.str());
+        MovementController::GetInstance().ClickToMove(corpsePos, playerPos); // Use the freshly read corpsePos
+        // Stay in LOOTING state
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Short delay while moving
+    } else {
+        // Close enough, stop and interact
+        LogMessage("GrindingEngine LOOTING: Reached corpse. Stopping and Interacting.");
+        MovementController::GetInstance().Stop();
+        
+        // --- Re-target the corpse before interacting ---
+        uint64_t corpseGuid = GuidToUint64(m_targetUnitPtr->GetGUID());
+        LogStream ssTarget; ssTarget << "GrindingEngine LOOTING: Requesting target corpse GUID 0x" << std::hex << corpseGuid;
+        LogMessage(ssTarget.str());
+        if (m_botController) {
+             m_botController->requestTarget(corpseGuid); // Request targeting via BotController
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Shorter initial delay
+        
+        // --- Wait for target to update in-game (with timeout) ---
+        bool targetSet = false;
+        const int maxWaitMs = 1000; // Max time to wait for target update (1 second)
+        const int checkIntervalMs = 100; // Check every 100ms
+        int waitedMs = 0;
+        while (waitedMs < maxWaitMs) {
+             uint64_t currentGuidInGame = m_objectManager->GetCurrentTargetGUID();
+             if (currentGuidInGame == corpseGuid) {
+                  LogMessage("GrindingEngine LOOTING: Confirmed target set in game.");
+                  targetSet = true;
+                  break;
+             }
+             std::this_thread::sleep_for(std::chrono::milliseconds(checkIntervalMs));
+             waitedMs += checkIntervalMs;
+        }
+        if (!targetSet) {
+            LogMessage("GrindingEngine LOOTING: Timed out waiting for target to be set in game. Aborting loot.");
+            m_targetUnitPtr = nullptr; // Clear pointer if we couldn't target
+            m_grindState = GrindState::CHECK_STATE;
+            return; // Exit looting state
+        }
+        // --- End Wait ---
+
+        // Attempt interaction (only if target was confirmed)
+        // bool interacted = m_targetUnitPtr->Interact(); 
+        // LogStream ss; ss << "GrindingEngine LOOTING: Interact() call returned: " << (interacted ? "true" : "false");
+        // LogMessage(ss.str());
+        if (m_botController) {
+            LogStream ssI; ssI << "GrindingEngine LOOTING: Requesting interaction with GUID 0x" << std::hex << corpseGuid;
+            LogMessage(ssI.str());
+            m_botController->requestInteract(corpseGuid);
+        } else {
+            LogMessage("GrindingEngine LOOTING Error: BotController null, cannot request interaction.");
+        }
+
+        // Wait a bit for auto-loot to happen (adjust as needed)
+        std::this_thread::sleep_for(std::chrono::milliseconds(750));
+
+        // Loot attempt finished, clear pointer and go back to checking
+        LogMessage("GrindingEngine LOOTING: Loot attempt finished. Back to CHECK_STATE.");
+        m_targetUnitPtr = nullptr;
+        m_grindState = GrindState::CHECK_STATE;
+    }
 } 

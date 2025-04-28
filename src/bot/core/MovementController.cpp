@@ -157,11 +157,11 @@ void MovementController::Stop() {
         // Clear the GUID 
         MemoryWriter::WriteMemory<uint64_t>(BASE + CTMOffsets::GUID_OFFSET, 0); 
         
-        // Set the action type to 1 (Face/Stop)
-        const uint32_t ACTION_STOP_FACE = 1; // Define the action code for stopping
-        MemoryWriter::WriteMemory<uint32_t>(BASE + CTMOffsets::ACTION_OFFSET, ACTION_STOP_FACE); 
+        // Set the action type to 3 (Stop)
+        const uint32_t ACTION_STOP = 3; // Use the correct action code for stopping
+        MemoryWriter::WriteMemory<uint32_t>(BASE + CTMOffsets::ACTION_OFFSET, ACTION_STOP); 
 
-        LogMessage("MovementController: Stop CTM action (1) written.");
+        LogMessage("MovementController: Stop CTM action (3) written.");
         
     } catch (const std::exception& e) {
         LogStream ssErr; ssErr << "MovementController Stop() EXCEPTION: " << e.what(); LogMessage(ssErr.str());

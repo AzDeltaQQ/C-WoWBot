@@ -148,13 +148,14 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
             // --- ADD BotController::run() CALL HERE ---
             if (GUI::g_BotController) {
                 try {
-                    GUI::g_BotController->run(); // Run the bot controller's main thread logic
+                    // GUI::g_BotController->run(); // Run the bot controller's main thread logic
+                    GUI::g_BotController->processRequests(); // Call the new request processing function
                 } catch (const std::exception& e) {
                     LogStream errLog;
-                    errLog << "[HookedEndScene] EXCEPTION calling GUI::g_BotController->run(): " << e.what();
+                    errLog << "[HookedEndScene] EXCEPTION calling GUI::g_BotController->processRequests(): " << e.what();
                     LogMessage(errLog.str());
                 } catch (...) {
-                    LogMessage("[HookedEndScene] UNKNOWN EXCEPTION calling GUI::g_BotController->run()");
+                    LogMessage("[HookedEndScene] UNKNOWN EXCEPTION calling GUI::g_BotController->processRequests()");
                 }
             }
             // --- END BotController::run() CALL ---

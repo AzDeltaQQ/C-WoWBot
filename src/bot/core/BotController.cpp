@@ -16,6 +16,7 @@
 #include <windows.h>  // Added for GetModuleFileNameA
 #include <algorithm> // Added for std::transform
 #include <cctype>    // Added for ::tolower
+#include <mutex>    // Added for mutex
 
 // Helper function (if not already available globally)
 // Consider moving to a shared utility header if used elsewhere
@@ -501,70 +502,89 @@ const std::vector<RotationStep>& BotController::getCurrentRotation() const {
     return m_currentRotation;
 }
 
-// --- Target Request Implementation --- 
+// --- Request Handling --- 
+// Called by engines to queue actions for the main thread
+
+// Request setting target GUID
 void BotController::requestTarget(uint64_t guid) {
-    m_requestedTargetGuid.store(guid); 
+    // Simple queueing - store the requested GUID
+    // The main update loop will process this
+    std::lock_guard<std::mutex> lock(m_requestMutex); 
+    m_targetRequest = guid;
+    m_hasTargetRequest = true;
 }
 
-uint64_t BotController::getAndClearRequestedTarget() {
-    // Atomically exchange the current value with 0 and return the old value
-    return m_requestedTargetGuid.exchange(0); 
-}
-// --- End Target Request --- 
-
-// --- Spell Cast Request Implementation --- 
+// Request casting a spell
 void BotController::requestCastSpell(uint32_t spellId) {
-    m_requestedSpellId.store(spellId);
+    // Queue the spell cast request
+    std::lock_guard<std::mutex> lock(m_requestMutex);
+    m_castRequest = spellId;
+    m_hasCastRequest = true;
 }
 
-uint32_t BotController::getAndClearRequestedSpell() {
-    return m_requestedSpellId.exchange(0);
+// Request interaction with a GUID
+void BotController::requestInteract(uint64_t guid) {
+    std::lock_guard<std::mutex> lock(m_requestMutex);
+    m_interactRequest = guid;
+    m_hasInteractRequest = true;
 }
-// --- End Spell Cast Request --- 
 
-void BotController::run() {
-    // LogMessage("BotController::run() loop started."); // Can be noisy if called every frame
-    try {
-        // Use m_stopRequested for the loop condition
-        // Note: This loop likely won't run more than once per frame when called from EndScene
-        // If run() is intended as a long-running loop, it needs its own thread.
-        // For now, we assume it's just processing one-shot tasks per frame.
-        if (!m_stopRequested) { 
+// --- Main Thread Processing --- 
+// Called periodically from the main game thread (e.g., EndScene hook)
+void BotController::processRequests() {
+    std::lock_guard<std::mutex> lock(m_requestMutex); // Lock for accessing request flags/data
 
-            // --- Process Target Request --- 
-            uint64_t requestedGuid = getAndClearRequestedTarget();
-            if (requestedGuid != 0) {
-                LogStream ssTargetReq; ssTargetReq << "BotController: Processing target request for GUID 0x" << std::hex << requestedGuid;
-                LogMessage(ssTargetReq.str());
-                TargetUnitByGuid(requestedGuid); // Call from main thread
-            }
-            // --- END Target Request --- 
-
-            // --- Process Spell Cast Request --- 
-            uint32_t requestedSpellId = getAndClearRequestedSpell();
-            if (requestedSpellId != 0) {
-                // Need the current target GUID from the game
-                uint64_t currentTargetGuid = 0;
-                try {
-                    currentTargetGuid = MemoryReader::Read<uint64_t>(0x00BD07B0); // Read current target GUID
-                } catch (...) { /* Handle error if needed */ }
-                
-                // Use SpellManager instance to cast (passing default 0 for unknown args)
-                if (m_spellManager) { // Ensure SpellManager is valid
-                    m_spellManager->CastSpell(requestedSpellId, currentTargetGuid, 0, 0);
-                }
-            }
-            // --- END Spell Cast Request ---
-
-            // Other main thread logic (e.g., state updates, GUI updates)
-            if (m_currentEngine) {
-                // TODO: Add any necessary updates or checks related to the engine
-                //       that *must* happen on the main thread. 
-                //       Be careful not to duplicate logic already in the engine's thread.
-            }
-        }
-    } catch (const std::exception& e) {
-        LogMessage(("BotController Error: Exception in run() logic: " + std::string(e.what())).c_str());
+    if (m_hasTargetRequest) {
+         LogStream ss; ss << "BotController: Processing target request for GUID 0x" << std::hex << m_targetRequest;
+         LogMessage(ss.str());
+        // Execute the actual targeting function (must be safe for main thread)
+        TargetUnitByGuid(m_targetRequest);
+        m_hasTargetRequest = false; // Reset flag
+        m_targetRequest = 0;
     }
-    // LogMessage("BotController::run() finished."); // Can be noisy if called every frame
+
+    if (m_hasCastRequest) {
+         LogStream ss; ss << "BotController: Processing cast request for SpellID " << m_castRequest;
+         LogMessage(ss.str());
+        // Assuming SpellManager::CastSpell is safe to call from main thread
+        // or it handles its own threading/queuing internally.
+        if (m_spellManager) { 
+             m_spellManager->CastSpell(m_castRequest); // Call the actual cast function
+        }
+        m_hasCastRequest = false;
+        m_castRequest = 0;
+    }
+
+    if (m_hasInteractRequest) {
+        LogStream ss; ss << "BotController: Processing interact request for GUID 0x" << std::hex << m_interactRequest;
+        LogMessage(ss.str());
+        // Find the WowObject and call its Interact method
+        if (m_objectManager) {
+             std::shared_ptr<WowObject> obj = m_objectManager->GetObjectByGUID(m_interactRequest);
+             if (obj) {
+                 obj->Interact(); // Call Interact from main thread
+                 LogStream ssDone; ssDone << "BotController: Executed Interact() on GUID 0x" << std::hex << m_interactRequest;
+                 LogMessage(ssDone.str());
+             } else {
+                 LogStream ssErr; ssErr << "BotController Error: Could not find object with GUID 0x" << std::hex << m_interactRequest << " to interact.";
+                 LogMessage(ssErr.str());
+             }
+        } else {
+             LogMessage("BotController Error: ObjectManager is null, cannot process interact request.");
+        }
+        m_hasInteractRequest = false;
+        m_interactRequest = 0;
+    }
 }
+
+// --- Looting Setting Implementation ---
+void BotController::setLootingEnabled(bool enabled) {
+    m_isLootingEnabled.store(enabled);
+    LogStream ss; ss << "BotController: Looting Enabled set to " << (enabled ? "true" : "false");
+    LogMessage(ss.str());
+}
+
+bool BotController::isLootingEnabled() const {
+    return m_isLootingEnabled.load();
+}
+// --- End Looting Setting ---

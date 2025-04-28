@@ -191,6 +191,15 @@ namespace GUI {
         }
         ImGui::Separator(); // Add separator after rotation loading
 
+        // --- Bot Settings --- 
+        bool loot_enabled = botController->isLootingEnabled();
+        if (ImGui::Checkbox("Enable Looting", &loot_enabled)) {
+            botController->setLootingEnabled(loot_enabled);
+        }
+        // Add other settings like Skinning, Mining etc. here later
+
+        ImGui::Separator(); // Add separator after settings
+
         // --- Start/Stop Button --- 
         // Get running state from BotController
         bool is_running = botController->isRunning(); 
