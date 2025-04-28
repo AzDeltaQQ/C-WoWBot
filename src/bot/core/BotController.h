@@ -81,10 +81,11 @@ public:
     void setLootingEnabled(bool enabled);
     bool isLootingEnabled() const;
 
-    // New member function declaration
+    // --- Request Handling --- 
+    void requestTarget(uint64_t guid);      // Add back declaration
+    // void requestCastSpell(uint32_t spellId); // Modify declaration
+    void requestCastSpell(uint32_t spellId, uint64_t targetGuid); // Add targetGuid parameter
     void requestInteract(uint64_t targetGuid);
-    void requestTarget(uint64_t guid);
-    void requestCastSpell(uint32_t spellId);
 
 private:
     // Core systems (non-owning pointers)
@@ -108,10 +109,11 @@ private:
     std::mutex m_requestMutex;           // Mutex to protect request variables
     uint64_t m_targetRequest = 0;        // Stores requested target GUID
     bool m_hasTargetRequest = false;     // Flag indicating a target request
-    uint32_t m_castRequest = 0;          // Stores requested spell ID
-    bool m_hasCastRequest = false;       // Flag indicating a cast request
-    uint64_t m_interactRequest = 0;      // Stores requested interact GUID
-    bool m_hasInteractRequest = false;   // Flag indicating an interact request
+    uint32_t m_castRequest_SpellId = 0;      // Stores requested spell ID (rename)
+    uint64_t m_castRequest_TargetGuid = 0;   // Stores requested spell target GUID (add)
+    bool m_hasCastRequest = false;           // Flag indicating a cast request
+    uint64_t m_interactRequest = 0;          // Stores requested interact GUID
+    bool m_hasInteractRequest = false;       // Flag indicating an interact request
     // -------------------------------------
 
     // --- Rotation State (New) ---

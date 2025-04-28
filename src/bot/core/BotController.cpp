@@ -515,10 +515,11 @@ void BotController::requestTarget(uint64_t guid) {
 }
 
 // Request casting a spell
-void BotController::requestCastSpell(uint32_t spellId) {
+void BotController::requestCastSpell(uint32_t spellId, uint64_t targetGuid) {
     // Queue the spell cast request
     std::lock_guard<std::mutex> lock(m_requestMutex);
-    m_castRequest = spellId;
+    m_castRequest_SpellId = spellId;
+    m_castRequest_TargetGuid = targetGuid;
     m_hasCastRequest = true;
 }
 
@@ -544,15 +545,16 @@ void BotController::processRequests() {
     }
 
     if (m_hasCastRequest) {
-         LogStream ss; ss << "BotController: Processing cast request for SpellID " << m_castRequest;
+         LogStream ss; ss << "BotController: Processing cast request for SpellID " << m_castRequest_SpellId << " on Target GUID 0x" << std::hex << m_castRequest_TargetGuid;
          LogMessage(ss.str());
         // Assuming SpellManager::CastSpell is safe to call from main thread
         // or it handles its own threading/queuing internally.
         if (m_spellManager) { 
-             m_spellManager->CastSpell(m_castRequest); // Call the actual cast function
+             m_spellManager->CastSpell(m_castRequest_SpellId, m_castRequest_TargetGuid);
         }
         m_hasCastRequest = false;
-        m_castRequest = 0;
+        m_castRequest_SpellId = 0;
+        m_castRequest_TargetGuid = 0;
     }
 
     if (m_hasInteractRequest) {

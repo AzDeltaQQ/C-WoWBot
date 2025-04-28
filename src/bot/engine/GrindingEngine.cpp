@@ -180,27 +180,35 @@ void GrindingEngine::updateState() {
             if (m_targetUnitPtr) { // Check if a target has been acquired and is valid
                  LogMessage("GrindingEngine PATHING: Target acquired! Stopping movement and entering COMBAT.");
                  MovementController::GetInstance().Stop(); // Stop CTM
+                 
+                 // *** INCREASED DELAY ***
+                 std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Give client more time
+                 // **********************
+
+                 // --- Calculate Effective Combat Range (Moved slightly earlier) ---
+                 const auto& rotation_pathing = m_botController->getCurrentRotation();
+                 float maxRange_pathing = 0.0f;
+                 if (!rotation_pathing.empty()) {
+                     for(const auto& step : rotation_pathing) {
+                         if (step.castRange > maxRange_pathing) {
+                             maxRange_pathing = step.castRange;
+                         }
+                     }
+                     m_effectiveCombatRange = (std::max)(5.0f, maxRange_pathing - 4.0f); 
+                 } else {
+                     m_effectiveCombatRange = 5.0f; 
+                 }
+                 LogStream ssRangePath; ssRangePath << "GrindingEngine: Setting Effective Combat Range to " << m_effectiveCombatRange << " (Max Spell Range: " << maxRange_pathing << ")";
+                 LogMessage(ssRangePath.str());
+                 // --- End Calculate Range ---
+                 
+                 // *** ADD FACETARGET HERE ***
+                 MovementController::GetInstance().FaceTarget(GuidToUint64(m_targetUnitPtr->GetGUID()));
+                 // **************************
+
                  m_grindState = GrindState::COMBAT;
                  m_combatStartTime = GetTickCount();
                  m_currentRotationIndex = 0;
-
-                // --- Calculate Effective Combat Range --- 
-                const auto& rotation_pathing = m_botController->getCurrentRotation();
-                float maxRange_pathing = 0.0f;
-                if (!rotation_pathing.empty()) {
-                    for(const auto& step : rotation_pathing) {
-                        if (step.castRange > maxRange_pathing) {
-                            maxRange_pathing = step.castRange;
-                        }
-                    }
-                    // Set effective range slightly less than max, but at least melee
-                    m_effectiveCombatRange = (std::max)(5.0f, maxRange_pathing - 4.0f); // Increased buffer
-                } else {
-                    m_effectiveCombatRange = 5.0f; // Default to melee if no rotation
-                }
-                LogStream ssRangePath; ssRangePath << "GrindingEngine: Setting Effective Combat Range to " << m_effectiveCombatRange << " (Max Spell Range: " << maxRange_pathing << ")";
-                LogMessage(ssRangePath.str());
-                // --- End Calculate Range ---
 
             } else {
                 // No valid target yet, continue pathing and checking
@@ -586,11 +594,11 @@ void GrindingEngine::handleCombat() {
         LogStream ss; ss << "GrindingEngine COMBAT: Target distance (" << distance << ") <= Effective Range (" << m_effectiveCombatRange << "). Stopping and Engaging.";
         LogMessage(ss.str());
 
-        // Stop moving
+        // Stop moving (Redundant, but ensures we stop if we *were* moving closer)
         MovementController::GetInstance().Stop(); 
         
         // Face the target (Convert WGUID to uint64_t)
-        MovementController::GetInstance().FaceTarget(GuidToUint64(m_targetUnitPtr->GetGUID()));
+        // MovementController::GetInstance().FaceTarget(GuidToUint64(m_targetUnitPtr->GetGUID())); // *** REMOVE THIS - MOVED TO PATHING TRANSITION ***
 
         // --- In range and facing, execute combat rotation --- 
         castSpellFromRotation();
@@ -629,7 +637,7 @@ void GrindingEngine::castSpellFromRotation() {
                  LogMessage(ss.str());
 
                  // Request the cast via BotController (runs on main thread)
-                 m_botController->requestCastSpell(step.spellId);
+                 m_botController->requestCastSpell(step.spellId, m_currentTargetGuid);
                  
                  spellCasted = true; // Mark as 'casted' to proceed in rotation
              } else if (cooldownMs > 0) {

@@ -7,3 +7,10 @@ botanalysis.txt
 
 # Cursor config
 .cursorignore
+
+# Ignore other bot directories
+BloogBot/
+IceFlake-master/
+
+# Ignore the gitignore file itself
+.gitignore
