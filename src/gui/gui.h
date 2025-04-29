@@ -2,6 +2,10 @@
 #include <Windows.h>
 #include <d3d9.h>
 #include "imgui.h"
+#include "log_tab.h"
+#include "objects_tab.h"
+#include "spells_tab.h"
+#include "bot_tab.h"
 
 // Forward declarations
 class BotController; // Forward declare BotController

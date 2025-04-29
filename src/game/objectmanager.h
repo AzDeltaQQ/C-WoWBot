@@ -48,9 +48,10 @@ private:
     // Cache of objects
     std::map<WGUID, std::shared_ptr<WowObject>> m_objectCache;
     std::mutex m_cacheMutex; // <-- Add mutex member
+    std::shared_ptr<WowPlayer> m_cachedLocalPlayer = nullptr;
     
     // Local player GUID
-    WGUID m_localPlayerGuid; // Will be initialized in constructor
+    WGUID m_localPlayerGuid; // Will be initialized in constructor // No longer storing this from init
     
     // Callback for enumeration
     static int __cdecl EnumObjectsCallback(uint32_t guid_low, uint32_t guid_high, int callback_arg);
@@ -84,6 +85,8 @@ public:
     
     // Update cache of objects
     void Update();
+    // NEW: Refresh cached player pointer
+    void RefreshLocalPlayerCache();
     
     // Get objects
     std::shared_ptr<WowObject> GetObjectByGUID(WGUID guid);
@@ -107,7 +110,7 @@ public:
     std::shared_ptr<WowObject> GetTarget();
     std::shared_ptr<WowObject> GetObjectByGUID(uint64_t guid);
 
-    WGUID GetLocalPlayerGUID() const; // Add this getter (WGUID version)
+    WGUID GetLocalPlayerGUID() const; // DEPRECATE OR REMOVE THIS? No longer reliable if not read on init.
     
     // Get the GUID of the currently targeted unit (from global variable)
     uint64_t GetCurrentTargetGUID() const;

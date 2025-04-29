@@ -3,6 +3,7 @@
 #include "../pathing/PathRecorder.h"
 #include "../engine/GrindingEngine.h"
 #include "../../utils/log.h" // Assuming log utility exists
+#include "lua_executor.h"
 
 // Include headers for systems passed in initialize, e.g.:
 // #include "../../game/ObjectManager.h"
@@ -42,6 +43,9 @@ BotController::BotController() {
     initializeRotationsDirectory(); // Initialize rotation directory path
 
     LogMessage("BotController: Instance created.");
+
+    // Initialize function pointers here or in a dedicated function
+    // IMPORTANT: Move this initialization to your actual InitializeFunctions() location!
 }
 
 BotController::~BotController() {
@@ -147,108 +151,189 @@ BotController::EngineType BotController::getCurrentEngineType() const {
     return m_currentEngineType;
 }
 
-void BotController::startPathRecording(int intervalMs) {
+void BotController::startGrindPathRecording(int intervalMs) {
      if (m_currentState != State::IDLE) {
-         LogMessage("BotController: Cannot start path recording unless IDLE.");
+         LogMessage("BotController: Cannot start GRIND path recording unless IDLE.");
          return;
      }
      if (m_pathRecorder) {
-         LogMessage("BotController: Starting path recording...");
-         if (m_pathRecorder->startRecording(intervalMs)) {
+         LogMessage("BotController: Starting GRIND path recording...");
+         if (m_pathRecorder->startRecording(intervalMs, PathManager::PathType::GRIND)) {
              m_currentState = State::PATH_RECORDING;
          } else {
-             LogMessage("BotController: Failed to start path recording (already recording?).");
+             LogMessage("BotController: Failed to start GRIND path recording (already recording?).");
          }
      } else {
          LogMessage("BotController Error: PathRecorder not initialized.");
      }
 }
 
-void BotController::stopPathRecording() {
+void BotController::stopGrindPathRecording() {
     if (m_currentState != State::PATH_RECORDING) {
         return;
     }
-     if (m_pathRecorder) {
-          LogMessage("BotController: Stopping path recording...");
+     if (m_pathRecorder && m_pathRecorder->isRecording()) {
+          LogMessage("BotController: Stopping GRIND path recording...");
          m_pathRecorder->stopRecording();
-         // PathRecorder should push final path to PathManager
          m_currentState = State::IDLE;
-          LogMessage("BotController: Path recording stopped.");
+          LogMessage("BotController: GRIND Path recording stopped.");
      } else {
-         LogMessage("BotController Error: PathRecorder not initialized.");
-         m_currentState = State::IDLE; // Recover state
+         LogMessage("BotController Error: PathRecorder not initialized or not recording when stop requested.");
+         m_currentState = State::IDLE;
      }
 }
 
-void BotController::clearCurrentPath() {
+void BotController::clearCurrentGrindPath() {
      if (m_currentState == State::PATH_RECORDING) {
-         LogMessage("BotController: Cannot clear path while recording.");
+         LogMessage("BotController: Cannot clear GRIND path while recording.");
          return;
      }
     if (m_pathManager) {
-         LogMessage("BotController: Clearing current path.");
-        m_pathManager->clearPath();
+         LogMessage("BotController: Clearing current GRIND path.");
+        m_pathManager->clearPath(PathManager::PathType::GRIND);
     } else {
         LogMessage("BotController Error: PathManager not initialized.");
     }
 }
 
-bool BotController::saveCurrentPath(const std::string& filename) {
-    if (m_currentState.load() == State::PATH_RECORDING) {
-         LogMessage("BotController: Cannot save path while recording.");
-         return false;
-     }
-     if (m_pathManager) {
-        // Format log message manually
+bool BotController::saveCurrentGrindPath(const std::string& filename) {
+    if (m_pathManager) {
         char logBuffer[256];
-        snprintf(logBuffer, sizeof(logBuffer), "BotController: Requesting PathManager to save path as '%s'.", filename.c_str());
+        snprintf(logBuffer, sizeof(logBuffer), "BotController: Requesting PathManager to save GRIND path as '%s'.", filename.c_str());
         LogMessage(logBuffer);
-        return m_pathManager->savePath(filename);
-     } else {
-        LogMessage("BotController Error: PathManager not initialized, cannot save path.");
+        return m_pathManager->savePath(filename, PathManager::PathType::GRIND);
+    } else {
+        LogMessage("BotController Error: PathManager not initialized, cannot save GRIND path.");
         return false;
-     }
+    }
 }
 
-bool BotController::loadPathByName(const std::string& pathName) {
+bool BotController::loadGrindPathByName(const std::string& pathName) {
     if (m_currentState != State::IDLE) {
-         LogMessage("BotController: Cannot load path unless IDLE.");
+         LogMessage("BotController: Cannot load GRIND path unless IDLE.");
          return false;
      }
     if (m_pathManager) {
-        // Format log message
         char logBuffer[256];
-        snprintf(logBuffer, sizeof(logBuffer), "BotController: Requesting PathManager to load path '%s'.", pathName.c_str());
+        snprintf(logBuffer, sizeof(logBuffer), "BotController: Requesting PathManager to load GRIND path '%s'.", pathName.c_str());
         LogMessage(logBuffer);
         
-        bool result = m_pathManager->loadPath(pathName);
+        bool result = m_pathManager->loadPath(pathName, PathManager::PathType::GRIND);
         if (!result) {
-             // Format log message
-             snprintf(logBuffer, sizeof(logBuffer), "BotController: PathManager failed to load path '%s'.", pathName.c_str());
+             snprintf(logBuffer, sizeof(logBuffer), "BotController: PathManager failed to load GRIND path '%s'.", pathName.c_str());
              LogMessage(logBuffer);
         }
         return result;
      } else {
-        LogMessage("BotController Error: PathManager not initialized, cannot load path.");
+        LogMessage("BotController Error: PathManager not initialized, cannot load GRIND path.");
         return false;
      }
 }
 
-std::vector<std::string> BotController::getAvailablePathNames() const {
+std::vector<std::string> BotController::getAvailableGrindPathNames() const {
     if (m_pathManager) {
-        return m_pathManager->ListAvailablePaths();
+        return m_pathManager->ListAvailablePaths(PathManager::PathType::GRIND);
     } else {
-        LogMessage("BotController Error: PathManager not initialized, cannot list paths.");
-        return {}; // Return empty vector
+        LogMessage("BotController Error: PathManager not initialized, cannot list GRIND paths.");
+        return {};
     }
 }
 
-std::string BotController::getCurrentPathName() const {
+std::string BotController::getCurrentGrindPathName() const {
     if (m_pathManager) {
-        return m_pathManager->GetCurrentPathName();
+        return m_pathManager->getCurrentPathName(PathManager::PathType::GRIND);
     } else {
-        LogMessage("BotController Error: PathManager not initialized, cannot get current path name.");
-        return ""; // Return empty string
+        LogMessage("BotController Error: PathManager not initialized, cannot get current GRIND path name.");
+        return "";
+    }
+}
+
+void BotController::startVendorPathRecording(int intervalMs, const std::string& vendorName) {
+     if (m_currentState != State::IDLE) {
+         LogMessage("BotController: Cannot start VENDOR path recording unless IDLE.");
+         return;
+     }
+     if (m_pathRecorder) {
+         LogMessage("BotController: Starting VENDOR path recording...");
+         if (m_pathRecorder->startRecording(intervalMs, PathManager::PathType::VENDOR, vendorName)) {
+             m_currentState = State::PATH_RECORDING;
+         } else {
+             LogMessage("BotController: Failed to start VENDOR path recording (already recording?).");
+         }
+     } else {
+         LogMessage("BotController Error: PathRecorder not initialized.");
+     }
+}
+
+void BotController::stopVendorPathRecording() {
+    if (m_currentState != State::PATH_RECORDING) {
+        return;
+    }
+     if (m_pathRecorder && m_pathRecorder->isRecording()) {
+          LogMessage("BotController: Stopping VENDOR path recording...");
+         m_pathRecorder->stopRecording();
+         m_currentState = State::IDLE;
+          LogMessage("BotController: VENDOR Path recording stopped.");
+     } else {
+         LogMessage("BotController Error: PathRecorder not initialized or not recording when stop requested.");
+         m_currentState = State::IDLE;
+     }
+}
+
+void BotController::clearCurrentVendorPath() {
+     if (m_currentState == State::PATH_RECORDING) {
+         LogMessage("BotController: Cannot clear VENDOR path while recording.");
+         return;
+     }
+    if (m_pathManager) {
+         LogMessage("BotController: Clearing current VENDOR path.");
+        m_pathManager->clearPath(PathManager::PathType::VENDOR);
+    } else {
+        LogMessage("BotController Error: PathManager not initialized.");
+    }
+}
+
+bool BotController::saveCurrentVendorPath(const std::string& filename, const std::string& vendorName) {
+    if (m_pathManager) {
+        char logBuffer[256];
+        snprintf(logBuffer, sizeof(logBuffer), "BotController: Requesting PathManager to save VENDOR path as '%s' with vendor '%s'.", filename.c_str(), vendorName.c_str());
+        LogMessage(logBuffer);
+        m_pathManager->setCurrentVendorName(vendorName);
+        return m_pathManager->savePath(filename, PathManager::PathType::VENDOR);
+    } else {
+        LogMessage("BotController Error: PathManager not initialized, cannot save VENDOR path.");
+        return false;
+    }
+}
+
+bool BotController::loadVendorPathByName(const std::string& pathName) {
+    if (m_currentState != State::IDLE) {
+         LogMessage("BotController: Cannot load VENDOR path unless IDLE.");
+         return false;
+     }
+    if (m_pathManager) {
+        char logBuffer[256];
+        snprintf(logBuffer, sizeof(logBuffer), "BotController: Requesting PathManager to load VENDOR path '%s'.", pathName.c_str());
+        LogMessage(logBuffer);
+        
+        bool result = m_pathManager->loadPath(pathName, PathManager::PathType::VENDOR);
+        if (!result) {
+             snprintf(logBuffer, sizeof(logBuffer), "BotController: PathManager failed to load VENDOR path '%s'.", pathName.c_str());
+             LogMessage(logBuffer);
+        }
+        return result;
+     } else {
+        LogMessage("BotController Error: PathManager not initialized, cannot load VENDOR path.");
+        return false;
+     }
+}
+
+std::vector<std::string> BotController::getAvailableVendorPathNames() const {
+    if (m_pathManager) {
+        return m_pathManager->ListAvailablePaths(PathManager::PathType::VENDOR);
+    } else {
+        LogMessage("BotController Error: PathManager not initialized, cannot list VENDOR paths.");
+        return {};
     }
 }
 
@@ -507,8 +592,6 @@ const std::vector<RotationStep>& BotController::getCurrentRotation() const {
 
 // Request setting target GUID
 void BotController::requestTarget(uint64_t guid) {
-    // Simple queueing - store the requested GUID
-    // The main update loop will process this
     std::lock_guard<std::mutex> lock(m_requestMutex); 
     m_targetRequest = guid;
     m_hasTargetRequest = true;
@@ -516,11 +599,8 @@ void BotController::requestTarget(uint64_t guid) {
 
 // Request casting a spell
 void BotController::requestCastSpell(uint32_t spellId, uint64_t targetGuid) {
-    // Queue the spell cast request
     std::lock_guard<std::mutex> lock(m_requestMutex);
-    m_castRequest_SpellId = spellId;
-    m_castRequest_TargetGuid = targetGuid;
-    m_hasCastRequest = true;
+    m_castRequests.push_back({spellId, targetGuid}); // Push the pair onto the deque
 }
 
 // Request interaction with a GUID
@@ -533,49 +613,167 @@ void BotController::requestInteract(uint64_t guid) {
 // --- Main Thread Processing --- 
 // Called periodically from the main game thread (e.g., EndScene hook)
 void BotController::processRequests() {
-    std::lock_guard<std::mutex> lock(m_requestMutex); // Lock for accessing request flags/data
+    // Variables to hold data dequeued/flagged for processing outside the lock
+    uint64_t targetToSet = 0;
+    bool processTarget = false;
+    uint64_t interactTarget = 0;
+    bool processInteract = false;
+    std::pair<uint32_t, uint64_t> castRequest = {0, 0};
+    bool processCast = false;
+    std::string luaScriptToRun;
+    bool processLua = false;
+    std::pair<int, int> itemSlotToSell = {-1, -1};
+    bool processSell = false; 
+    bool processCloseVendor = false; // Local flag for close request
 
-    if (m_hasTargetRequest) {
-         LogStream ss; ss << "BotController: Processing target request for GUID 0x" << std::hex << m_targetRequest;
-         LogMessage(ss.str());
-        // Execute the actual targeting function (must be safe for main thread)
-        TargetUnitByGuid(m_targetRequest);
-        m_hasTargetRequest = false; // Reset flag
-        m_targetRequest = 0;
-    }
-
-    if (m_hasCastRequest) {
-         LogStream ss; ss << "BotController: Processing cast request for SpellID " << m_castRequest_SpellId << " on Target GUID 0x" << std::hex << m_castRequest_TargetGuid;
-         LogMessage(ss.str());
-        // Assuming SpellManager::CastSpell is safe to call from main thread
-        // or it handles its own threading/queuing internally.
-        if (m_spellManager) { 
-             m_spellManager->CastSpell(m_castRequest_SpellId, m_castRequest_TargetGuid);
+    {
+        std::lock_guard<std::mutex> lock(m_requestMutex); // Lock for accessing request flags/data
+        
+        // Process Target Request (take latest)
+        if (m_hasTargetRequest) {
+            targetToSet = m_targetRequest;
+            processTarget = true;
+            m_hasTargetRequest = false; // Consume the request
+            m_targetRequest = 0; // Clear stored request
         }
-        m_hasCastRequest = false;
-        m_castRequest_SpellId = 0;
-        m_castRequest_TargetGuid = 0;
+
+        // Process Interact Request (take latest)
+        if (m_hasInteractRequest) {
+            interactTarget = m_interactRequest;
+            processInteract = true;
+            m_hasInteractRequest = false; // Consume the request
+            m_interactRequest = 0; // Clear stored request
+        }
+
+        // Process Cast Request (take oldest from deque)
+        if (!m_castRequests.empty()) {
+            castRequest = m_castRequests.front();
+            m_castRequests.pop_front();
+            processCast = true;
+        }
+
+        // Process Sell Request (take oldest from deque)
+        if (!m_sellRequests.empty()) {
+            itemSlotToSell = m_sellRequests.front();
+            m_sellRequests.pop_front();
+            processSell = true;
+        }
+
+        // Process Close Vendor Request (set flag)
+        if (m_hasCloseVendorRequest) {
+            processCloseVendor = true; // Set local flag
+            m_hasCloseVendorRequest = false; // Reset member flag inside lock
+        }
+
+        // Process Lua Test Request (take latest)
+        if (m_hasLuaTestRequest) { // Use the flag
+            luaScriptToRun = m_luaTestScriptRequest; // Use the string member
+            m_hasLuaTestRequest = false; // Consume the request
+            m_luaTestScriptRequest.clear(); // Clear the stored script
+            processLua = true;
+        }
     }
 
-    if (m_hasInteractRequest) {
-        LogStream ss; ss << "BotController: Processing interact request for GUID 0x" << std::hex << m_interactRequest;
-        LogMessage(ss.str());
-        // Find the WowObject and call its Interact method
+    // --- Execute Actions (Outside Lock) ---
+    if (processTarget) {
+         LogStream ss; ss << "BotController: Processing target request for GUID 0x" << std::hex << targetToSet; LogMessage(ss.str());
+        TargetUnitByGuid(targetToSet);
+    }
+
+    if (processInteract) {
+        LogStream ss; ss << "BotController: Processing interact request for GUID 0x" << std::hex << interactTarget; LogMessage(ss.str());
         if (m_objectManager) {
-             std::shared_ptr<WowObject> obj = m_objectManager->GetObjectByGUID(m_interactRequest);
+             std::shared_ptr<WowObject> obj = m_objectManager->GetObjectByGUID(interactTarget);
              if (obj) {
-                 obj->Interact(); // Call Interact from main thread
-                 LogStream ssDone; ssDone << "BotController: Executed Interact() on GUID 0x" << std::hex << m_interactRequest;
+                 obj->Interact();
+                 LogStream ssDone; ssDone << "BotController: Executed Interact() on GUID 0x" << std::hex << interactTarget;
                  LogMessage(ssDone.str());
              } else {
-                 LogStream ssErr; ssErr << "BotController Error: Could not find object with GUID 0x" << std::hex << m_interactRequest << " to interact.";
+                 LogStream ssErr; ssErr << "BotController Error: Could not find object with GUID 0x" << std::hex << interactTarget << " to interact.";
                  LogMessage(ssErr.str());
              }
         } else {
              LogMessage("BotController Error: ObjectManager is null, cannot process interact request.");
         }
-        m_hasInteractRequest = false;
-        m_interactRequest = 0;
+    }
+
+    if (processCast) {
+         LogStream ss; ss << "BotController: Processing cast request for SpellID " << castRequest.first << " on GUID 0x" << std::hex << castRequest.second; LogMessage(ss.str());
+         if (m_spellManager) { 
+             m_spellManager->CastSpell(castRequest.first, castRequest.second); // Use values from the deque pair
+         }
+    }
+    
+    if (processSell) {
+        if (!IsVendorWindowOpen()) {
+            LogMessage("BotController Error: Vendor window is not open! Cannot sell via Lua.");
+        } else {
+            int bagIndex = itemSlotToSell.first;
+            int slotIndex = itemSlotToSell.second; // This is 0-based C++ index
+
+            // --- Lua Call Logic ---
+            // Lua's UseContainerItem expects 1-based slot indices.
+            // Bag 0 in C++ corresponds to Lua Bag 0 (Backpack).
+            // Bags 1-4 in C++ correspond to Lua Bags 1-4.
+            int luaSlotId = slotIndex + 1;
+            int luaBagId = bagIndex; // Direct mapping works for UseContainerItem
+
+            LogStream ssLua; ssLua << "BotController: Processing sell request via Lua for Bag " 
+                                  << luaBagId << ", Slot " << luaSlotId;
+            LogMessage(ssLua.str());
+
+            // Construct the Lua command
+            std::string luaScript = "UseContainerItem(" + std::to_string(luaBagId) + ", " + std::to_string(luaSlotId) + ")";
+
+            try {
+                // Execute the Lua command
+                LuaExecutor::ExecuteStringNoResult(luaScript);
+                LogMessage("BotController: Executed Lua UseContainerItem.");
+                
+                // Optional: Keep client-side processing?
+                // UseContainerItem might trigger necessary client updates via events.
+                // Calling RetrieveAndProcessClientObject might be redundant or even cause issues
+                // if the item is already gone from the slot due to the Lua call.
+                // Let's comment it out for now. If updates seem missing, we can revisit.
+                /*
+                uint64_t itemGuidJustSold = GetItemGuidInSlot(bagIndex, slotIndex); // Get GUID *after* Lua call
+                if (::RetrieveAndProcessClientObject) {
+                    if (itemGuidJustSold != 0) { // Only call if we got a GUID (sell might not have cleared slot yet)
+                        LogMessage("BotController: Calling RetrieveAndProcessClientObject after Lua sell...");
+                        int itemGuidLow = (int)(itemGuidJustSold & 0xFFFFFFFF);
+                        int itemGuidHigh = (int)(itemGuidJustSold >> 32);
+                        ::RetrieveAndProcessClientObject(itemGuidLow, itemGuidHigh);
+                        LogMessage("BotController: RetrieveAndProcessClientObject call completed.");
+                    } else {
+                         LogMessage("BotController: Item GUID in slot is now 0 after UseContainerItem. Skipping RetrieveAndProcessClientObject.");
+                    }
+                } else {
+                    LogMessage("BotController Error: RetrieveAndProcessClientObject function pointer is null!");
+                }
+                */
+                
+            } catch (const LuaExecutor::LuaException& e) {
+                 LogStream ssErr; ssErr << "BotController Error: LuaException executing UseContainerItem: " << e.what(); LogMessage(ssErr.str());
+            } catch (const std::exception& e) {
+                 LogStream ssErr; ssErr << "BotController Error: Exception executing UseContainerItem: " << e.what(); LogMessage(ssErr.str());
+            } catch (...) {
+                 LogMessage("BotController Error: Unknown exception executing UseContainerItem.");
+            }
+        }
+    }
+
+    // Process Close Vendor Request (using local flag)
+    if (processCloseVendor) {
+         LogMessage("BotController: Processing close vendor window request.");
+         try { LuaExecutor::ExecuteStringNoResult("CloseMerchant()"); } catch (...) { /* ... Log Error ... */ }
+    }
+    
+    if (processLua) {
+       LogStream ss; ss << "BotController: Processing Lua test request. Script: " << luaScriptToRun; LogMessage(ss.str());
+        try { 
+            bool result = LuaExecutor::ExecuteString<bool>(luaScriptToRun);
+            LogStream ssRes; ssRes << "BotController LUA TEST RESULT: " << (result ? "true" : "false"); LogMessage(ssRes.str());
+        } catch (...) { /* ... Log Error ... */ }
     }
 }
 
@@ -590,3 +788,77 @@ bool BotController::isLootingEnabled() const {
     return m_isLootingEnabled.load();
 }
 // --- End Looting Setting ---
+
+// --- Add implementation for getting vendor path points ---
+const std::vector<Vector3>& BotController::getLoadedVendorPathPoints() const {
+    if (m_pathManager) {
+        return m_pathManager->getPath(PathManager::PathType::VENDOR);
+    } else {
+        // Return a static empty vector if path manager isn't available
+        static const std::vector<Vector3> emptyPath;
+        LogMessage("BotController Error: PathManager not initialized, cannot get vendor path points.");
+        return emptyPath;
+    }
+}
+
+// --- Rotation Management ---
+void BotController::loadRotation(const std::string& filename) {
+    // TODO: Implement JSON loading for rotation steps
+}
+
+// --- Add back getCurrentVendorPathName --- 
+std::string BotController::getCurrentVendorPathName() const {
+    if (m_pathManager) {
+        return m_pathManager->getCurrentPathName(PathManager::PathType::VENDOR);
+    } else {
+        LogMessage("BotController Error: PathManager not initialized, cannot get current VENDOR path name.");
+        return "";
+    }
+}
+// ---------------------------------------
+
+// --- UI State Accessors Implementation ---
+bool BotController::getIsVendorWindowVisible() const {
+    return m_isVendorWindowVisible.load();
+}
+
+void BotController::setIsVendorWindowVisible(bool isVisible) {
+    m_isVendorWindowVisible.store(isVisible);
+}
+// -----------------------------------------
+
+// --- Request Implementations ---
+void BotController::requestSellItem(int bagIndex, int slotIndex) { 
+    std::lock_guard<std::mutex> lock(m_requestMutex);
+    // These are handled by the deque now.
+    // Ensure bag index and slot index are reasonable (basic check)
+    if (bagIndex >= 0 && bagIndex <= 4 && slotIndex >= 0) {
+        m_sellRequests.push_back({bagIndex, slotIndex}); // Store the pair
+        LogStream ss;
+        ss << "BotController: Sell request queued (Bag: " << bagIndex << ", Slot: " << slotIndex << ").";
+        LogMessage(ss.str());
+    } else {
+         LogStream ssWarn; ssWarn << "BotController Warning: Received invalid sell request (Bag: " << bagIndex << ", Slot: " << slotIndex << ").";
+         LogMessage(ssWarn.str());
+    }
+}
+
+void BotController::requestCloseVendorWindow() {
+    std::lock_guard<std::mutex> lock(m_requestMutex);
+    m_hasCloseVendorRequest = true;
+    LogMessage("BotController: Close vendor window request queued.");
+}
+
+// --- ADDED: Request Lua Test --- 
+void BotController::requestLuaTestScript(const std::string& script) {
+    std::lock_guard<std::mutex> lock(m_requestMutex);
+    if (m_hasLuaTestRequest) {
+        LogMessage("BotController Warning: Lua test already pending, ignoring new request.");
+        return;
+    }
+    m_luaTestScriptRequest = script;
+    m_hasLuaTestRequest = true;
+}
+// --- END ADDED ---
+
+// -------------------------------

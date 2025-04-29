@@ -2,6 +2,7 @@
 
 #include <cstdint> // For uintptr_t and standard integer types
 #include <stdexcept> // For potential exceptions on bad access (though less common)
+#include <cstring> // Required for memcpy
 
 namespace MemoryReader {
 
@@ -9,16 +10,22 @@ namespace MemoryReader {
     // Warning: Accessing invalid memory will likely cause a crash.
     template<typename T>
     T Read(uintptr_t address) {
-        // Direct memory access since we are in-process
         try {
-             // Check for null address to prevent crashes on zero pointers
             if (address == 0) {
-                 throw std::runtime_error("MemoryReader::Read - Attempted to read from NULL address.");
+                throw std::runtime_error("Attempted to read from null address");
             }
-            // Treat the memory as volatile to prevent compiler optimizations from caching the read
-            volatile T* ptr = reinterpret_cast<volatile T*>(address);
-            return *ptr;
+            // Create a non-volatile local variable
+            T localValue;
+            // Get a volatile pointer to the memory address
+            volatile T* volatilePtr = reinterpret_cast<volatile T*>(address);
+            // Copy the memory from the volatile location to the local variable
+            // Cast volatile pointer to const void* for memcpy compatibility
+            memcpy(&localValue, const_cast<const void*>(reinterpret_cast<const volatile void*>(volatilePtr)), sizeof(T)); 
+            // Return the non-volatile local copy
+            return localValue; 
         } catch (const std::exception& e) {
+            // Log the detailed exception
+            LogStream ss;
             // Catch potential access violations, though behavior might be crash
             // Log or rethrow as needed
             throw std::runtime_error("MemoryReader::Read - Exception during direct memory access at address 0x" + 

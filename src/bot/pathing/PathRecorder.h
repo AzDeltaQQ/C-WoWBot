@@ -4,6 +4,7 @@
 #include <atomic>
 #include "PathManager.h" // Includes Vector3 definition
 #include <thread>
+#include <string>
 
 // Forward declarations
 class ObjectManager;
@@ -17,7 +18,7 @@ public:
 
     // Start recording player position at specified intervals
     // Returns true if starting was successful, false otherwise (e.g., already recording)
-    bool startRecording(int intervalMilliseconds);
+    bool startRecording(int intervalMilliseconds, PathManager::PathType type, const std::string& vendorName = "");
 
     // Stop recording
     void stopRecording();
@@ -39,6 +40,8 @@ private:
     std::atomic<bool> m_isRecording = {false};
     std::atomic<bool> m_stopRequested = {false};
     int m_intervalMs = 1000; // Default interval
+    PathManager::PathType m_currentRecordingType = PathManager::PathType::GRIND; // Track current type
+    std::string m_currentVendorName; // <<< ADDED
 
     // Thread for the recording loop
     std::thread m_recordingThread;

@@ -29,12 +29,16 @@ set(SOURCE_FILES
     src/gui/spells_tab.cpp
     src/gui/log_tab.cpp
     src/gui/bot_tab.cpp
+    # src/gui/testing_tab.cpp # Removed testing tab source
     # Add Bot source files
     src/bot/core/BotController.cpp
     src/bot/core/MovementController.cpp
     src/bot/engine/GrindingEngine.cpp
     src/bot/pathing/PathManager.cpp
     src/bot/pathing/PathRecorder.cpp
+    # Add Lua source files (NEW)
+    src/lua/lua_executor.cpp
+    src/lua/wow_lua_api.cpp
 )
 
 # ImGui source files using new paths
@@ -72,13 +76,14 @@ target_include_directories(WoWDX9Hook PRIVATE
     ${CMAKE_SOURCE_DIR}/src/bot/core    # Add bot include dirs
     ${CMAKE_SOURCE_DIR}/src/bot/engine
     ${CMAKE_SOURCE_DIR}/src/bot/pathing
+    ${CMAKE_SOURCE_DIR}/src/lua         # Add Lua executor include dir (NEW)
     ${CMAKE_SOURCE_DIR}/dependencies/ImGui
     ${CMAKE_SOURCE_DIR}/dependencies/ImGui/backends
     ${CMAKE_SOURCE_DIR}/dependencies/MinHook/include # MinHook include is already absolute if add_library uses PUBLIC
     "$ENV{DXSDK_DIR}/Include" # Keep DX SDK include
 )
 
-# Link directories (DX SDK path remains the same)
+# Link directories
 target_link_directories(WoWDX9Hook PRIVATE
     "$ENV{DXSDK_DIR}/Lib/x86"
 )

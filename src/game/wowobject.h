@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 #include <iomanip>
-#include "../../utils/memory.h" // Include the robust MemoryReader
-#include "../../utils/log.h" // Include for LogStream and LogMessage
+#include "../utils/memory.h" // Corrected relative path
+#include "../utils/log.h" // Corrected relative path
 
 // WoW GUID structure (64-bit identifier for game objects)
 struct WGUID {
@@ -221,4 +221,14 @@ public:
 
     // Example of keeping VTable call for specific functions
     int GetQuestStatus(); // Still uses VTable
+};
+
+// Container class (for bags etc.)
+class WowContainer : public WowObject {
+public:
+    WowContainer(void* ptr, WGUID guid);
+
+    // TODO: Add methods to get num slots and item GUIDs using offsets?
+    // int GetNumSlots() const;
+    // WGUID GetItemGuidInSlot(int slotIndex) const;
 }; 

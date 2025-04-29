@@ -9,6 +9,7 @@
 #include <mutex>     // Added for std::mutex
 #include "wowobject.h" // Then the definition of Vec3
 #include "objectmanager.h" // Then the header using Vec3
+#include "functions.h" // Include for GetLocalPlayerGuid function pointer
 
 // Initialize static instance
 ObjectManager* ObjectManager::m_instance = nullptr;
@@ -18,9 +19,10 @@ ObjectManager::ObjectManager()
     : m_enumVisibleObjects(nullptr),
       m_getObjectPtrByGuidInner(nullptr),
       m_objectManagerPtr(nullptr),
-      m_isFullyInitialized(false) // Initialize flag to false
+      m_isFullyInitialized(false), // Initialize flag to false
+      m_cachedLocalPlayer(nullptr) // Initialize cached player pointer
 {
-    m_localPlayerGuid = { 0, 0 };
+    m_localPlayerGuid = { 0, 0 }; // Initialize to 0, but don't rely on it
 }
 
 // Destructor
@@ -60,6 +62,7 @@ void ObjectManager::Shutdown() {
         m_instance->m_enumVisibleObjects = nullptr;
         m_instance->m_getObjectPtrByGuidInner = nullptr;
         m_instance->m_isFullyInitialized = false;
+        m_instance->m_cachedLocalPlayer = nullptr; // Clear cached player
         
         // Delete the singleton instance
         delete m_instance;
@@ -76,7 +79,7 @@ bool ObjectManager::TryFinishInitialization() {
     }
 
     ObjectManagerActual* tempObjMgrPtr = nullptr;
-    WGUID tempLocalGuid = {0, 0};
+    // WGUID tempLocalGuid = {0, 0}; // No longer read GUID here
 
     try {
         DWORD clientConnection = *reinterpret_cast<DWORD*>(STATIC_CLIENT_CONNECTION);
@@ -91,12 +94,12 @@ bool ObjectManager::TryFinishInitialization() {
             return false; 
         }
         
-        uintptr_t guidReadAddr = reinterpret_cast<uintptr_t>(tempObjMgrPtr) + LOCAL_GUID_OFFSET;
-        tempLocalGuid = *reinterpret_cast<WGUID*>(guidReadAddr);
-        
-        if (!tempLocalGuid.IsValid()) {
-             return false; // Indicate initialization is not yet complete
-        }
+        // uintptr_t guidReadAddr = reinterpret_cast<uintptr_t>(tempObjMgrPtr) + LOCAL_GUID_OFFSET;
+        // tempLocalGuid = *reinterpret_cast<WGUID*>(guidReadAddr);
+        // 
+        // if (!tempLocalGuid.IsValid()) {
+        //      return false; // Indicate initialization is not yet complete
+        // }
 
     } catch (const std::exception& e) {
         // Log the exception minimally if needed
@@ -104,14 +107,18 @@ bool ObjectManager::TryFinishInitialization() {
         return false; // Failed due to exception
     }
 
-    // --- Success! Store pointers and set flag --- 
-    // Only reach here if ClientConnection, ObjMgrPtr, AND LocalPlayerGuid are valid
+    // --- Success! Store ObjMgr pointer and set flag --- 
+    // Only reach here if ClientConnection AND ObjMgrPtr are valid
     m_objectManagerPtr = tempObjMgrPtr;
-    m_localPlayerGuid = tempLocalGuid;
+    // m_localPlayerGuid = tempLocalGuid; // Don't store GUID from potentially early read
     m_isFullyInitialized = true;
-                   
-    // Optionally add a single log message for success if desired
-    LogMessage("ObjectManager::TryFinishInitialization Succeeded! Object Manager ready.");
+
+    // Log the successfully read GUID - REMOVED
+    // LogStream initLog;
+    // initLog << "ObjectManager::TryFinishInitialization Succeeded! Object Manager ready. Stored Player GUID: 0x"
+    //         << std::hex << GuidToUint64(m_localPlayerGuid);
+    // LogMessage(initLog.str());
+    LogMessage("ObjectManager::TryFinishInitialization Succeeded! Object Manager pointer acquired.");
 
     return true;
 }
@@ -126,7 +133,9 @@ int __cdecl ObjectManager::EnumObjectsCallback(uint32_t guid_low, uint32_t guid_
     void* objPtr = nullptr;
     
     try {
-         objPtr = instance->m_getObjectPtrByGuidInner(instance->m_objectManagerPtr, guid.guid_low, &guid);
+         // Use temporary struct copy for safety with the inner function call
+         WGUID guidCopy = guid;
+         objPtr = instance->m_getObjectPtrByGuidInner(instance->m_objectManagerPtr, guid.guid_low, &guidCopy);
     } catch (const std::exception& e) {
         LogStream errLog; errLog << "[EnumObjectsCallback] EXCEPTION calling GetObjectPtrByGuidInner: " << e.what(); LogMessage(errLog.str());
         return 1; // Continue enumeration
@@ -157,7 +166,8 @@ int __cdecl ObjectManager::EnumObjectsCallback(uint32_t guid_low, uint32_t guid_
             default:                obj = std::make_shared<WowObject>(objPtr, guid, type); break;
         }
         if (obj) { 
-             instance->m_objectCache[guid] = obj;
+            // No lock needed here as Update() holds the lock
+            instance->m_objectCache[guid] = obj; 
         } else {
              LogStream errLog; errLog << "[EnumObjectsCallback] FAILED make_shared for GUID 0x" << std::hex << GuidToUint64(guid);
              LogMessage(errLog.str());
@@ -177,15 +187,16 @@ void ObjectManager::Update() {
     // Lock the mutex for the duration of this function
     std::lock_guard<std::mutex> lock(m_cacheMutex);
     
-    m_objectCache.clear(); // Now safe to modify
+    m_objectCache.clear(); // Clear cache before enumeration
     if (m_enumVisibleObjects) {
         try {
             m_enumVisibleObjects(EnumObjectsCallback, reinterpret_cast<int>(this));
         } catch (const std::exception& e) {
              LogMessage(std::string("ObjectManager::Update EXCEPTION during enumeration: ") + e.what() + "\n");
-             m_objectCache.clear(); 
+             m_objectCache.clear(); // Clear again on error
         }
     }
+    // NOTE: RefreshLocalPlayerCache is called separately in HookedEndScene AFTER Update()
 }
 
 // Get object by GUID (WGUID version)
@@ -218,57 +229,122 @@ std::vector<std::shared_ptr<WowObject>> ObjectManager::GetObjectsByType(WowObjec
     return results;
 }
 
-// Get local player - Updated to use __thiscall function if needed
-std::shared_ptr<WowPlayer> ObjectManager::GetLocalPlayer() {
-    // Ensure fully initialized before trying to get player
+// NEW: Refreshes the internally cached local player pointer
+void ObjectManager::RefreshLocalPlayerCache() {
+    // Ensure ObjectManager base pointers are initialized first
     if (!IsInitialized()) { 
-        return nullptr;
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        m_cachedLocalPlayer = nullptr;
+        return;
     }
+
+    // Call the native function to get the current player GUID
+    if (!GetLocalPlayerGuid) {
+        // LogMessage("ObjectManager::RefreshLocalPlayerCache Error: Global GetLocalPlayerGuid function pointer is null!");
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        m_cachedLocalPlayer = nullptr;
+        return;
+    }
+    uint64_t playerGuid64 = GetLocalPlayerGuid();
+    if (playerGuid64 == 0) {
+        // LogMessage("ObjectManager::RefreshLocalPlayerCache Warning: GetLocalPlayerGuid() returned 0."); // Don't spam log
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        m_cachedLocalPlayer = nullptr;
+        return; // Not logged in or player not valid yet?
+    }
+
+    WGUID currentLocalPlayerGuid;
+    currentLocalPlayerGuid.guid_low = (uint32_t)playerGuid64;
+    currentLocalPlayerGuid.guid_high = (uint32_t)(playerGuid64 >> 32);
+
+    std::shared_ptr<WowPlayer> foundPlayer = nullptr;
+
+    // Now use this potentially updated GUID to find the object
     
-    // Proceed with previous logic (cache check -> direct lookup -> fallback)
-    if (m_localPlayerGuid.IsValid()) {
-        // 1. Check Cache first (most efficient if Update() was called recently)
-        {
-             std::lock_guard<std::mutex> lock(m_cacheMutex);
-             auto objFromCache = GetObjectByGUID_locked(m_localPlayerGuid); // Helper to avoid re-locking
-             if (objFromCache && objFromCache->GetType() == OBJECT_PLAYER) {
-                 return std::static_pointer_cast<WowPlayer>(objFromCache);
-             }
-        } // Mutex unlocked here
-        
-        // 2. If not in cache, try direct lookup using the __thiscall function
-        if (m_objectManagerPtr && m_getObjectPtrByGuidInner) {
-             void* playerPtr = nullptr;
+    // 1. Check Cache first 
+    {
+         std::lock_guard<std::mutex> lock(m_cacheMutex);
+         auto objFromCache = GetObjectByGUID_locked(currentLocalPlayerGuid); // Use helper
+         if (objFromCache && objFromCache->GetType() == OBJECT_PLAYER) {
+             foundPlayer = std::static_pointer_cast<WowPlayer>(objFromCache);
+         }
+    } // Mutex unlocked here
+    
+    // 2. If not in cache, try direct lookup using the __thiscall function
+    if (!foundPlayer && m_objectManagerPtr && m_getObjectPtrByGuidInner) {
+         void* playerPtr = nullptr;
+         try {
+              // Create temporary GUID struct to pass its pointer
+              WGUID localGuidCopy = currentLocalPlayerGuid;
+              playerPtr = m_getObjectPtrByGuidInner(m_objectManagerPtr, currentLocalPlayerGuid.guid_low, &localGuidCopy);
+         } catch (const std::exception&) { /* Call failed */ }
+         
+         if (playerPtr) {
+             // Verify type before returning
              try {
-                  // Create temporary GUID struct to pass its pointer
-                  WGUID localGuidCopy = m_localPlayerGuid;
-                  playerPtr = m_getObjectPtrByGuidInner(m_objectManagerPtr, m_localPlayerGuid.guid_low, &localGuidCopy);
-             } catch (const std::exception&) { /* Call failed */ }
-             
-             if (playerPtr) {
-                 // Verify type before returning
-                 try {
-                     WowObjectType type = *reinterpret_cast<WowObjectType*>(reinterpret_cast<uintptr_t>(playerPtr) + OBJECT_TYPE_OFFSET);
-                     if (type == OBJECT_PLAYER) {
-                         // Create a temporary shared_ptr - it won't be cached here unless Update() runs
-                         return std::make_shared<WowPlayer>(playerPtr, m_localPlayerGuid);
+                 WowObjectType type = *reinterpret_cast<WowObjectType*>(reinterpret_cast<uintptr_t>(playerPtr) + OBJECT_TYPE_OFFSET);
+                 if (type == OBJECT_PLAYER) {
+                     // Found via direct lookup, create the object
+                     foundPlayer = std::make_shared<WowPlayer>(playerPtr, currentLocalPlayerGuid); 
+                     // Immediately add/update it in the cache
+                     {
+                         std::lock_guard<std::mutex> lock(m_cacheMutex);
+                         m_objectCache[currentLocalPlayerGuid] = foundPlayer; 
                      }
-                 } catch(const std::exception&) { /* Failed to read type */ }
-            }
+                 }
+             } catch(const std::exception&) { /* Failed to read type */ }
         }
     }
-    // 3. Fallback: If direct reads failed, try searching the current cache (less reliable)
-    //    GetObjectsByType already locks, so no extra lock needed if we call it.
-    //    However, let's implement the search directly here to avoid recursive locking issues if GetObjectsByType changes.
-    {
+    
+    // 3. Fallback: Search cache again (maybe Update() just ran between steps 1 and 2? Unlikely but possible)
+    if (!foundPlayer) {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        auto objFromCache = GetObjectByGUID_locked(currentLocalPlayerGuid);
+        if (objFromCache && objFromCache->GetType() == OBJECT_PLAYER) {
+            foundPlayer = std::static_pointer_cast<WowPlayer>(objFromCache);
+        }
+    }
+    
+    // 4. Final fallback: Iterate cache (less efficient) - Removed this as it's unreliable for finding the *local* player
+    /*
+    if (!foundPlayer) {
         std::lock_guard<std::mutex> lock(m_cacheMutex);
         for (const auto& pair : m_objectCache) {
             if (pair.second && pair.second->GetType() == OBJECT_PLAYER) {
-                return std::static_pointer_cast<WowPlayer>(pair.second);
+                 LogMessage("ObjectManager::RefreshLocalPlayerCache Warning: Found player via cache iteration fallback.");
+                 foundPlayer = std::static_pointer_cast<WowPlayer>(pair.second);
+                 break; // Found one, stop iterating
             }
         }
     }
-    return nullptr; // No player found
+    */
+
+    // Update the cached member pointer
+    {
+        std::lock_guard<std::mutex> lock(m_cacheMutex);
+        // Log if the player pointer changed (or became null/valid)
+        // if (m_cachedLocalPlayer != foundPlayer) {
+        //     LogStream ss; ss << "RefreshLocalPlayerCache: Player pointer updated. Was " 
+        //                    << (m_cachedLocalPlayer ? "Valid" : "Null") << ", Is now " << (foundPlayer ? "Valid" : "Null")
+        //                    << " (GUID: 0x" << std::hex << playerGuid64 << ")";
+        //     LogMessage(ss.str());
+        // }
+        m_cachedLocalPlayer = foundPlayer;
+    }
+}
+
+
+// Get local player - SIMPLIFIED: Returns the pointer cached by RefreshLocalPlayerCache
+std::shared_ptr<WowPlayer> ObjectManager::GetLocalPlayer() {
+    // Still check if OM is initialized in general
+    if (!IsInitialized()) { 
+        // LogMessage("GetLocalPlayer DEBUG: Returning null because !IsInitialized()"); 
+        return nullptr;
+    }
+    // Return the cached pointer (thread-safe read due to mutex)
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
+    // Debug logging removed, rely on RefreshLocalPlayerCache logs if needed
+    return m_cachedLocalPlayer;
 }
 
 // Helper for GetLocalPlayer to avoid re-locking mutex
@@ -288,11 +364,6 @@ std::map<WGUID, std::shared_ptr<WowObject>> ObjectManager::GetObjects() {
 std::map<WGUID, std::shared_ptr<WowObject>> ObjectManager::GetObjects() const {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(m_cacheMutex)); // Need const_cast for const method
     return m_objectCache; // Return a copy
-}
-
-// Get local player GUID
-WGUID ObjectManager::GetLocalPlayerGUID() const {
-    return m_localPlayerGuid; // Assuming WGUID read is atomic
 }
 
 // Find objects by name
@@ -320,7 +391,7 @@ std::vector<std::shared_ptr<WowObject>> ObjectManager::FindObjectsByName(const s
 
 // Get nearest object of a type
 std::shared_ptr<WowObject> ObjectManager::GetNearestObject(WowObjectType type, float maxDistance) {
-    // GetLocalPlayer handles its own locking
+    // GetLocalPlayer now uses the cached pointer
     auto player = GetLocalPlayer();
     if (!player) return nullptr;
     
@@ -353,6 +424,8 @@ std::shared_ptr<WowObject> ObjectManager::GetNearestObject(WowObjectType type, f
 
 // Returns the underlying pointer to the actual game object manager
 ObjectManagerActual* ObjectManager::GetInternalObjectManagerPtr() const {
+    // Add a check for initialization? Or assume caller checks IsInitialized?
+    // For now, just return the pointer. Caller should check IsInitialized() first.
     return m_objectManagerPtr;
 }
 

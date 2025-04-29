@@ -5,6 +5,7 @@
 #include <sstream>
 #include "log.h" // Include for LogStream and LogMessage
 #include "objectmanager.h" // Include ObjectManager to get local player GUID
+#include "functions.h" // Include for GetLocalPlayerGuid
 
 // --- Offsets (Assuming these are defined correctly elsewhere or here) ---
 // Object Base Relative
@@ -205,9 +206,13 @@ void WowUnit::UpdateDynamicData() {
 
     // Get the actual local player GUID (still useful for rage division later)
     ObjectManager* objMgr = ObjectManager::GetInstance();
-    WGUID localPlayerGuid = objMgr->IsInitialized() ? objMgr->GetLocalPlayerGUID() : WGUID{0, 0};
-    uint64_t localPlayerGuid64 = GuidToUint64(localPlayerGuid);
-    bool isPlayerObject = (GuidToUint64(m_guid) == localPlayerGuid64 && localPlayerGuid64 != 0);
+    // WGUID localPlayerGuid = objMgr->IsInitialized() ? objMgr->GetLocalPlayerGUID() : WGUID{0, 0}; // OLD DEPRECATED
+    uint64_t localPlayerGuid64 = 0;
+    if (objMgr->IsInitialized() && GetLocalPlayerGuid) {
+         localPlayerGuid64 = GetLocalPlayerGuid(); // Use global func ptr
+    }
+
+    // bool isPlayerObject = (GuidToUint64(m_guid) == localPlayerGuid64 && localPlayerGuid64 != 0);
 
     // --- Read Unit Specific Data --- 
     try {
@@ -378,4 +383,12 @@ int WowGameObject::GetQuestStatus() {
     } catch (...) {
         return 0;
     }
+}
+
+// --- WowContainer Implementation ---
+
+WowContainer::WowContainer(void* ptr, WGUID guid)
+    : WowObject(ptr, guid, OBJECT_CONTAINER) {
+    // Optional: Add any container-specific initialization here
+    // For example, reading initial slot count or item data if desired
 } 

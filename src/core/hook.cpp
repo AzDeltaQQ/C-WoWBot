@@ -10,6 +10,7 @@
 #include "gui.h"
 #include "wowobject.h"
 #include "BotController.h"
+#include "lua_executor.h"
 
 #pragma comment(lib, "d3d9.lib")
 
@@ -137,12 +138,13 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
             // ObjectManager is initialized, update the entire cache first
             try {
                 objMgr->Update(); 
+                objMgr->RefreshLocalPlayerCache();
             } catch (const std::exception& e) {
                 LogStream errLog;
-                errLog << "[HookedEndScene] EXCEPTION calling objMgr->Update(): " << e.what();
+                errLog << "[HookedEndScene] EXCEPTION calling objMgr->Update()/RefreshLocalPlayerCache(): " << e.what();
                 LogMessage(errLog.str());
             } catch (...) {
-                 LogMessage("[HookedEndScene] UNKNOWN EXCEPTION calling objMgr->Update()");
+                 LogMessage("[HookedEndScene] UNKNOWN EXCEPTION calling objMgr->Update()/RefreshLocalPlayerCache()");
             }
 
             // --- ADD BotController::run() CALL HERE ---
@@ -150,6 +152,7 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
                 try {
                     // GUI::g_BotController->run(); // Run the bot controller's main thread logic
                     GUI::g_BotController->processRequests(); // Call the new request processing function
+
                 } catch (const std::exception& e) {
                     LogStream errLog;
                     errLog << "[HookedEndScene] EXCEPTION calling GUI::g_BotController->processRequests(): " << e.what();
@@ -161,7 +164,11 @@ HRESULT APIENTRY HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
             // --- END BotController::run() CALL ---
 
             // Now proceed with player-specific updates if needed (or remove if Update handles it)
-            uint64_t playerGuid = GuidToUint64(objMgr->GetLocalPlayerGUID());
+            uint64_t playerGuid = 0;
+            if (GetLocalPlayerGuid) {
+                 playerGuid = GetLocalPlayerGuid(); // Use the global function pointer
+            }
+
             DWORD clientState = 0;
             try {
                 clientState = *reinterpret_cast<DWORD*>(CLIENT_STATE_ADDR);
@@ -272,6 +279,16 @@ namespace Hook {
             return false;
         }
         LogMessage("Hook::Initialize: MinHook Initialized.");
+
+        // --- ADD LUA INITIALIZATION ---
+        LogMessage("Hook::Initialize: Initializing LuaExecutor...");
+        if (!LuaExecutor::Initialize()) {
+            LogMessage("Hook::Initialize Error: LuaExecutor::Initialize failed!");
+            MH_Uninitialize(); // Clean up MinHook if Lua fails
+            return false;
+        }
+        LogMessage("Hook::Initialize: LuaExecutor Initialized.");
+        // --- END LUA INITIALIZATION ---
 
         LogMessage("Hook::Initialize: Finding EndScene address...");
         LogMessage("Hook::Initialize: Creating D3D9 object...");
@@ -426,6 +443,12 @@ namespace Hook {
         g_cleanupCalled = true;
 
         LogMessage("[Hook] CleanupHook: Starting cleanup process...");
+
+        // --- ADD LUA SHUTDOWN ---
+        LogMessage("[Hook] CleanupHook: Shutting down LuaExecutor...");
+        LuaExecutor::Shutdown();
+        LogMessage("[Hook] CleanupHook: LuaExecutor shutdown completed.");
+        // --- END LUA SHUTDOWN ---
 
         LogMessage("[Hook] CleanupHook: Shutting down GUI...");
         GUI::Shutdown();

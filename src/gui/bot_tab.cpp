@@ -5,6 +5,8 @@
 #include "../bot/core/BotController.h" 
 #include "../bot/pathing/PathManager.h" // Include full definition for PathManager
 #include "../bot/pathing/PathRecorder.h" // Include full definition for PathRecorder
+#include "../game/objectmanager.h" // Added: To use ObjectManager::GetInstance()
+#include "../game/wowobject.h"     // Added: To use Vector3 and player object methods
 
 #include <vector>
 #include <string>
@@ -12,18 +14,194 @@
 
 namespace GUI {
 
-    static bool show_path_creator_window = false; // Flag to control visibility
-    static char path_filename_buffer[128] = "MyPath"; // Buffer for filename input
-    
-    // State for Path Loading UI
-    static std::vector<std::string> available_paths; // Cache for path names
-    static int selected_path_index = -1; // Index of the path selected in the combo box
-    static std::string loaded_path_name = ""; // Name of the currently loaded path
+    // --- Grind Path State ---
+    static bool show_grind_path_creator_window = false; // Renamed flag
+    static char grind_path_filename_buffer[128] = "MyGrindPath"; // Renamed buffer
+    static std::vector<std::string> available_grind_paths; // Renamed cache
+    static int selected_grind_path_index = -1; // Renamed index
+    static std::string loaded_grind_path_name = ""; // Renamed loaded name
+
+    // --- Vendor Path State (NEW) ---
+    static bool show_vendor_path_creator_window = false;
+    static char vendor_path_filename_buffer[128] = "MyVendorPath";
+    static std::vector<std::string> available_vendor_paths;
+    static int selected_vendor_path_index = -1;
+    static std::string loaded_vendor_path_name = "";
 
     // State for Rotation Loading UI
     static std::vector<std::string> available_rotations;
     static int selected_rotation_index = -1;
     static std::string loaded_rotation_name = "";
+
+    // Helper function to render path loading UI (avoids code duplication)
+    void render_path_loader(const char* section_label, const char* id_suffix, 
+                             BotController* botController, PathManager::PathType pathType,
+                             std::vector<std::string>& available_paths_cache,
+                             int& selected_path_index_cache,
+                             std::string& loaded_path_name_cache) {
+        ImGui::Text(section_label);
+        ImGui::SameLine();
+        
+        std::vector<const char*> path_items;
+        for (const auto& p : available_paths_cache) {
+            path_items.push_back(p.c_str());
+        }
+
+        std::string combo_id = std::string("##PathSelectCombo") + id_suffix;
+        std::string load_button_id = std::string("Load##LoadPathButton") + id_suffix;
+        std::string refresh_button_id = std::string("Refresh##RefreshPathButton") + id_suffix;
+
+        ImGui::PushItemWidth(150); 
+        if (available_paths_cache.empty()) {
+            ImGui::TextUnformatted("(No paths found)");
+        } else {
+            if (ImGui::Combo(combo_id.c_str(), &selected_path_index_cache, path_items.data(), path_items.size())) {
+                // Selection changed
+            }
+        }
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        if (ImGui::Button(load_button_id.c_str())) {
+            if (selected_path_index_cache >= 0 && static_cast<size_t>(selected_path_index_cache) < available_paths_cache.size()) {
+                const std::string& nameToLoad = available_paths_cache[selected_path_index_cache];
+                bool success = false;
+                if (pathType == PathManager::PathType::GRIND) {
+                    success = botController->loadGrindPathByName(nameToLoad);
+                } else {
+                    success = botController->loadVendorPathByName(nameToLoad);
+                }
+                if (success) {
+                    loaded_path_name_cache = nameToLoad; 
+                }
+            }
+        }
+        ImGui::SameLine(); 
+        if (ImGui::Button(refresh_button_id.c_str())) {
+            LogMessage("GUI: Refresh button clicked...");
+            if (pathType == PathManager::PathType::GRIND) {
+                 available_paths_cache = botController->getAvailableGrindPathNames();
+                 loaded_path_name_cache = botController->getCurrentGrindPathName();
+            } else {
+                 available_paths_cache = botController->getAvailableVendorPathNames();
+                 loaded_path_name_cache = botController->getCurrentVendorPathName();
+            }
+            selected_path_index_cache = -1; 
+            for (size_t i = 0; i < available_paths_cache.size(); ++i) {
+                 if (available_paths_cache[i] == loaded_path_name_cache) {
+                     selected_path_index_cache = static_cast<int>(i);
+                     break;
+                 }
+            }
+        }
+        if (!loaded_path_name_cache.empty()) {
+             ImGui::SameLine();
+             ImGui::TextDisabled("(Loaded: %s)", loaded_path_name_cache.c_str());
+        }
+    }
+
+    // Helper function to render path creator window
+    void render_path_creator_window(const char* window_title, const char* id_suffix, bool& show_window_flag,
+                                    BotController* botController, PathManager::PathType pathType,
+                                    char* filename_buffer) {
+        if (show_window_flag) {
+            ImGui::Begin(window_title, &show_window_flag, ImGuiWindowFlags_AlwaysAutoResize);
+            ImGui::Text("Path Recording Controls (%s)", (pathType == PathManager::PathType::GRIND ? "Grind" : "Vendor"));
+            ImGui::Separator();
+            
+            // --- ADDED: Vendor Name Input (only for vendor paths) ---
+            if (pathType == PathManager::PathType::VENDOR) {
+                ImGui::InputText("Vendor Name", vendorNameBuffer, IM_ARRAYSIZE(vendorNameBuffer));
+            }
+            // --------------------------------------------------------
+
+            static int path_interval_ms = 1000;
+            ImGui::PushID(id_suffix); // Ensure unique IDs for interval slider if windows open simultaneously
+            ImGui::SliderInt("Record Interval (ms)", &path_interval_ms, 100, 5000); 
+            ImGui::PopID();
+
+            bool is_recording = botController->getCurrentState() == BotController::State::PATH_RECORDING;
+            const char* record_button_label = is_recording ? "Stop Recording" : "Start Recording";
+            if (ImGui::Button(record_button_label)) {
+                if (is_recording) {
+                    // Stop whichever type is currently recording
+                    if (pathType == PathManager::PathType::GRIND) botController->stopGrindPathRecording();
+                    else botController->stopVendorPathRecording();
+                } else {
+                    if (pathType == PathManager::PathType::GRIND) {
+                         botController->startGrindPathRecording(path_interval_ms);
+                    } else {
+                        // Pass vendor name when starting vendor path recording
+                        botController->startVendorPathRecording(path_interval_ms, vendorNameBuffer); 
+                    }
+                }
+            }
+
+            // Display current coordinates while recording
+            if (is_recording) {
+                 // Ensure ObjectManager and WowObject headers are included at the top of the file
+                 auto player = ObjectManager::GetInstance()->GetLocalPlayer();
+                 if (player) {
+                    player->UpdateDynamicData(); // Ensure position is fresh
+                    Vector3 pos = player->GetPosition();
+                    ImGui::Text("Recording at: X: %.2f, Y: %.2f, Z: %.2f", pos.x, pos.y, pos.z);
+                 } else {
+                    ImGui::Text("Recording... (Player not found?)");
+                 }
+            }
+
+            // --- BEGIN ADDED CODE for Recorded Points List ---
+            ImGui::Separator(); // Separate from recording controls
+            ImGui::Text("Recorded Points:");
+
+            // Create a scrollable child window for the points list
+            float list_height = ImGui::GetTextLineHeightWithSpacing() * 8; // Adjust height (e.g., 8 lines high)
+            ImGui::BeginChild("RecordedPointsList", ImVec2(0, list_height), true, ImGuiWindowFlags_HorizontalScrollbar);
+
+            // Get the path recorder instance
+            const PathRecorder* recorder = botController->getPathRecorder(); // Use accessor
+            if (recorder) {
+                 // Get the points from the recorder
+                 const std::vector<Vector3>& current_path_points = recorder->getRecordedPath(); // Corrected method name
+
+                 if (!current_path_points.empty()) {
+                    for (size_t i = 0; i < current_path_points.size(); ++i) {
+                        const auto& pt = current_path_points[i];
+                        ImGui::Text("%zu: X: %.2f, Y: %.2f, Z: %.2f", i + 1, pt.x, pt.y, pt.z);
+                    }
+                 } else {
+                    ImGui::TextUnformatted("(No points recorded yet)");
+                 }
+            } else {
+                 ImGui::TextUnformatted("(Path Recorder unavailable)");
+            }
+
+            ImGui::EndChild(); // End RecordedPointsList
+            // --- END ADDED CODE ---
+
+            ImGui::Separator(); // Separator before Path Management
+            ImGui::Text("Path Management");
+            ImGui::InputText("Filename##Path", filename_buffer, IM_ARRAYSIZE(filename_buffer));
+            ImGui::SameLine();
+            if (ImGui::Button("Save##Path")) {
+                if (strlen(filename_buffer) > 0) {
+                    if (pathType == PathManager::PathType::GRIND) botController->saveCurrentGrindPath(filename_buffer);
+                    else {
+                         // Pass vendor name when saving vendor path
+                        botController->saveCurrentVendorPath(filename_buffer, vendorNameBuffer); 
+                    }
+                } else {
+                    LogMessage("GUI Error: Cannot save path with empty filename.");
+                }
+            }
+            if (ImGui::Button("Clear Path##Path")) {
+                 if (pathType == PathManager::PathType::GRIND) botController->clearCurrentGrindPath();
+                 else botController->clearCurrentVendorPath();
+                 // Optionally clear buffer: filename_buffer[0] = '\0';
+            }
+            
+            ImGui::End();
+        }
+    }
 
     void render_bot_tab(BotController* botController) { // Updated signature
         if (!botController) {
@@ -37,15 +215,25 @@ namespace GUI {
             botController->setEngine(BotController::EngineType::GRINDING); // Set to the first available engine
         }
 
-        // Refresh path list when tab becomes visible (simple refresh strategy)
-        if (ImGui::IsWindowAppearing()) { // Or use a dedicated refresh button
-             // Refresh Paths
-             available_paths = botController->getAvailablePathNames();
-             loaded_path_name = botController->getCurrentPathName();
-             selected_path_index = -1; 
-             for (size_t i = 0; i < available_paths.size(); ++i) {
-                 if (available_paths[i] == loaded_path_name) {
-                     selected_path_index = static_cast<int>(i);
+        // Refresh path/rotation lists when tab appears
+        if (ImGui::IsWindowAppearing()) { 
+             // Refresh Grind Paths
+             available_grind_paths = botController->getAvailableGrindPathNames();
+             loaded_grind_path_name = botController->getCurrentGrindPathName();
+             selected_grind_path_index = -1; 
+             for (size_t i = 0; i < available_grind_paths.size(); ++i) {
+                 if (available_grind_paths[i] == loaded_grind_path_name) {
+                     selected_grind_path_index = static_cast<int>(i);
+                     break;
+                 }
+             }
+             // Refresh Vendor Paths
+             available_vendor_paths = botController->getAvailableVendorPathNames();
+             loaded_vendor_path_name = botController->getCurrentVendorPathName();
+             selected_vendor_path_index = -1; 
+             for (size_t i = 0; i < available_vendor_paths.size(); ++i) {
+                 if (available_vendor_paths[i] == loaded_vendor_path_name) {
+                     selected_vendor_path_index = static_cast<int>(i);
                      break;
                  }
              }
@@ -79,61 +267,17 @@ namespace GUI {
         }
         ImGui::Separator();
 
-        // --- Path Loading Controls ---
-        ImGui::Text("Load Path:");
-        ImGui::SameLine();
-        
-        // Convert vector<string> to const char* for ImGui Combo
-        std::vector<const char*> path_items;
-        for (const auto& p : available_paths) {
-            path_items.push_back(p.c_str());
-        }
-
-        ImGui::PushItemWidth(150); // Adjust width as needed
-        if (available_paths.empty()) {
-            ImGui::TextUnformatted("(No paths found)");
-        } else {
-            if (ImGui::Combo("##PathSelectCombo", &selected_path_index, path_items.data(), path_items.size())) {
-                // Selection changed - update internal state if needed, but loading happens on button press
-            }
-        }
-        ImGui::PopItemWidth();
-        ImGui::SameLine();
-        if (ImGui::Button("Load##LoadPathButton")) {
-            if (selected_path_index >= 0 && static_cast<size_t>(selected_path_index) < available_paths.size()) {
-                const std::string& nameToLoad = available_paths[selected_path_index];
-                if (botController->loadPathByName(nameToLoad)) {
-                    loaded_path_name = nameToLoad; // Update displayed loaded path on success
-                } else {
-                    // Optionally show an error popup to the user
-                }
-            } else {
-                 LogMessage("GUI: No path selected to load.");
-            }
-        }
-        ImGui::SameLine(); // Add refresh button
-        if (ImGui::Button("Refresh##RefreshPathButton")) {
-            LogMessage("GUI: Refresh button clicked, refreshing path list...");
-            available_paths = botController->getAvailablePathNames();
-            loaded_path_name = botController->getCurrentPathName();
-            selected_path_index = -1; // Reset selection
-            // Try to find the loaded path in the available list and set the index
-            for (size_t i = 0; i < available_paths.size(); ++i) {
-                 if (available_paths[i] == loaded_path_name) {
-                     selected_path_index = static_cast<int>(i);
-                     break;
-                 }
-            }
-        }
-
-        // Display currently loaded path
-        if (!loaded_path_name.empty()) {
-             ImGui::SameLine();
-             ImGui::TextDisabled("(Loaded: %s)", loaded_path_name.c_str());
-        }
+        // --- Grind Path Loading --- 
+        render_path_loader("Grind Path:", "Grind", botController, PathManager::PathType::GRIND, 
+                           available_grind_paths, selected_grind_path_index, loaded_grind_path_name);
         ImGui::Separator();
 
-        // --- Rotation Loading Controls (New Section) ---
+        // --- Vendor Path Loading (NEW) --- 
+        render_path_loader("Vendor Path:", "Vendor", botController, PathManager::PathType::VENDOR,
+                           available_vendor_paths, selected_vendor_path_index, loaded_vendor_path_name);
+        ImGui::Separator();
+
+        // --- Rotation Loading Controls ---
         ImGui::Text("Load Rotation:");
         ImGui::SameLine();
 
@@ -222,123 +366,27 @@ namespace GUI {
             }
         }
 
-        // --- Pathing Creation Controls (Button) --- 
+        // --- Pathing Creation Controls (Buttons for both types) --- 
         ImGui::Separator();
-        ImGui::Text("Pathing Creation:"); // Renamed section slightly
+        ImGui::Text("Pathing Creation:"); 
         bool is_recording = botController->getCurrentState() == BotController::State::PATH_RECORDING;
-        if (ImGui::Button("Create/Edit Path##BotTab", ImVec2(-FLT_MIN, 0))) { // Renamed button
-            show_path_creator_window = true; // Set flag instead of opening popup
+        const char* recording_status_text = is_recording ? "(Recording...)" : "";
+        
+        if (ImGui::Button("Create/Edit Grind Path##BotTab")) { 
+            show_grind_path_creator_window = true; 
         }
         ImGui::SameLine();
-        ImGui::Text(is_recording ? "(Recording...)" : "(Not Recording)");
-
-        // --- Path Creator Window (replaces popup) --- 
-        if (show_path_creator_window) {
-            // Use Begin/End for a standard window. Pass the boolean by reference to get the close button behavior.
-            ImGui::Begin("Path Creator", &show_path_creator_window, ImGuiWindowFlags_AlwaysAutoResize);
-            
-            ImGui::Text("Path Recording Controls");
-            ImGui::Separator();
-            
-            static int path_interval_ms = 1000;
-            ImGui::SliderInt("Record Interval (ms)", &path_interval_ms, 100, 5000); 
-
-            const char* record_button_label = is_recording ? "Stop Recording" : "Start Recording";
-            if (ImGui::Button(record_button_label)) {
-                if (is_recording) {
-                    botController->stopPathRecording();
-                }
-                else {
-                    botController->startPathRecording(path_interval_ms);
-                }
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Clear Path")) {
-                botController->clearCurrentPath();
-            }
-            
-            // --- Add Save Controls ---
-            ImGui::PushItemWidth(150); // Limit width of input text
-            ImGui::InputText("##PathFilename", path_filename_buffer, IM_ARRAYSIZE(path_filename_buffer));
-            ImGui::PopItemWidth();
-            ImGui::SameLine();
-            if (ImGui::Button("Save Path")) {
-                if (strlen(path_filename_buffer) > 0) {
-                    // Call BotController to save the path
-                    std::string filenameToSave = path_filename_buffer;
-                    if (botController->saveCurrentPath(filenameToSave)) {
-                        // --- Refresh the path list after successful save ---
-                        LogMessage("GUI: Path saved successfully, refreshing available paths list...");
-                        available_paths = botController->getAvailablePathNames(); // Update the static list
-                        // Set the newly saved path as the currently loaded/selected one
-                        loaded_path_name = filenameToSave;
-                        selected_path_index = -1; 
-                        for (size_t i = 0; i < available_paths.size(); ++i) {
-                             if (available_paths[i] == loaded_path_name) {
-                                 selected_path_index = static_cast<int>(i);
-                                 break;
-                             }
-                        }
-                        // -----------------------------------------------------
-                    } else {
-                         LogMessage("GUI Error: BotController failed to save path.");
-                    }
-                } else {
-                    // TODO: Optionally show an error message if filename is empty
-                    LogMessage("GUI Error: Path filename cannot be empty.");
-                }
-            }
-            // -------------------------
-
-            ImGui::Separator();
-            ImGui::Text("Recorded Points:");
-            
-            ImGui::BeginChild("PathPointsList", ImVec2(350, 150), true, ImGuiWindowFlags_HorizontalScrollbar);
-            
-            const std::vector<Vector3>* path_to_display = nullptr; 
-            bool is_rec = botController->getCurrentState() == BotController::State::PATH_RECORDING;
-            
-            if (is_rec) {
-                // If recording, get the live path from the recorder
-                const PathRecorder* recorder = botController->getPathRecorder();
-                if (recorder) {
-                    path_to_display = &recorder->getRecordedPath();
-                }
-            } else {
-                // If not recording, get the completed path from the manager
-                const PathManager* pathMgr = botController->getPathManager(); 
-                if (pathMgr) { 
-                   path_to_display = &pathMgr->getPath();
-                }
-            }
-            
-            // Display the selected path (if found)
-            if (path_to_display) {
-                if (path_to_display->empty()) {
-                   ImGui::TextUnformatted("(No points recorded)");
-                }
-                for (size_t i = 0; i < path_to_display->size(); ++i) {
-                   const auto& pt = (*path_to_display)[i]; 
-                   ImGui::Text("%zu: (%.2f, %.2f, %.2f)", i + 1, pt.x, pt.y, pt.z);
-                }
-                // Auto-scroll to bottom if path is long and currently recording
-                if (is_rec && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
-                   ImGui::SetScrollHereY(1.0f);
-                }
-            } else {
-                 // Handle case where neither recorder nor manager was available
-                 ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Path source not available.");
-            }
-            
-            ImGui::EndChild();
-            
-            ImGui::Separator();
-            // No explicit close button needed, the 'X' on the window works via the boolean flag
-            // if (ImGui::Button("Close")) {
-            //     show_path_creator_window = false;
-            // }
-            ImGui::End(); // End the Path Creator window
+         if (ImGui::Button("Create/Edit Vendor Path##BotTab")) { 
+            show_vendor_path_creator_window = true; 
         }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(recording_status_text);
+
+        // --- Render Path Creator Windows --- 
+        render_path_creator_window("Grind Path Creator", "Grind", show_grind_path_creator_window, 
+                                   botController, PathManager::PathType::GRIND, grind_path_filename_buffer);
+        render_path_creator_window("Vendor Path Creator", "Vendor", show_vendor_path_creator_window, 
+                                   botController, PathManager::PathType::VENDOR, vendor_path_filename_buffer);
 
     }
 

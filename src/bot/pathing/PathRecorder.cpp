@@ -4,6 +4,7 @@
 
 #include <thread> // Include for std::thread
 #include <chrono> // For sleep
+#include <system_error> // For std::system_error in stopRecording
 
 // Define offsets here or include a common header where they are defined
 // REVERTED to standard X, Y, Z order
@@ -18,6 +19,17 @@ namespace {
     T ReadMemorySafe(uintptr_t address) {
         if (address == 0) return T{}; // Check null address
         try {
+            // Basic check for readability (optional, requires Windows.h)
+            #ifdef _WIN32
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == 0) {
+                return T{}; // Failed to query memory info
+            }
+            // Check if memory is committed and readable
+            if (mbi.State != MEM_COMMIT || !(mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
+                return T{}; // Memory not readable
+            }
+            #endif
             return *reinterpret_cast<T*>(address);
         } catch (const std::exception& /*e*/) {
              return T{}; // Return default value on memory access error
@@ -37,7 +49,7 @@ PathRecorder::~PathRecorder() {
     LogMessage("PathRecorder: Instance destroyed.");
 }
 
-bool PathRecorder::startRecording(int intervalMilliseconds) {
+bool PathRecorder::startRecording(int intervalMilliseconds, PathManager::PathType type, const std::string& vendorName) {
     if (m_isRecording) {
         LogMessage("PathRecorder: Start requested but already recording.");
         return false;
@@ -52,10 +64,12 @@ bool PathRecorder::startRecording(int intervalMilliseconds) {
          return false;
     }
 
-    LogMessage("PathRecorder: Starting recording...");
+    LogMessage(("PathRecorder: Starting recording for " + std::string(type == PathManager::PathType::GRIND ? "GRIND" : "VENDOR") + " path...").c_str());
     m_intervalMs = intervalMilliseconds;
     m_recordedPath.clear(); // Clear previous recording session data
     m_stopRequested = false;
+    m_currentRecordingType = type; // Store the type being recorded
+    m_currentVendorName = (type == PathManager::PathType::VENDOR) ? vendorName : ""; // Store vendor name if applicable
     m_isRecording = true; // Set flag before starting thread
 
     // Start recordingLoop in a separate thread
@@ -70,7 +84,7 @@ void PathRecorder::stopRecording() {
     }
     LogMessage("PathRecorder: Stopping recording...");
     m_stopRequested = true;
-    m_isRecording = false; // Indicate stop is in progress
+    // Keep m_isRecording = true until after join completes, to prevent immediate restart attempts.
 
     // Join the thread if it exists and is joinable
     if (m_recordingThread.joinable()) {
@@ -86,16 +100,20 @@ void PathRecorder::stopRecording() {
     }
 
     // State is fully stopped only after joining
-    m_isRecording = false; // Explicitly set false after join
+    m_isRecording = false; // Now set recording to false
 
     // Log size before setting
-    char setPathMsg[100];
-    snprintf(setPathMsg, sizeof(setPathMsg), "PathRecorder: Pushing %zu recorded points to PathManager.", m_recordedPath.size());
+    char setPathMsg[150];
+    snprintf(setPathMsg, sizeof(setPathMsg), "PathRecorder: Pushing %zu recorded points to PathManager as %s path.", 
+             m_recordedPath.size(), (m_currentRecordingType == PathManager::PathType::GRIND ? "GRIND" : "VENDOR"));
     LogMessage(setPathMsg);
 
     // Push the completed path to the PathManager (moved from loop end)
     if (!m_recordedPath.empty()) {
-        m_pathManager.setPath(m_recordedPath);
+        m_pathManager.setPath(m_recordedPath, m_currentRecordingType); // Pass the recorded type!
+        if (m_currentRecordingType == PathManager::PathType::VENDOR) {
+            m_pathManager.setCurrentVendorName(m_currentVendorName);
+        }
         LogMessage("PathRecorder: Final path pushed to PathManager.");
     } else {
          LogMessage("PathRecorder: Recording stopped with empty path.");
@@ -142,7 +160,7 @@ void PathRecorder::recordingLoop() {
 
         std::this_thread::sleep_for(std::chrono::milliseconds(m_intervalMs));
     }
-    m_isRecording = false; 
+    // Removed m_isRecording = false; here, it's done after join in stopRecording
      LogMessage("PathRecorder: recordingLoop finished.");
 }
 

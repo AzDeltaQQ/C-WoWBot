@@ -8,27 +8,29 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem> // Requires C++17
+#include <algorithm> // For std::sort
+#include <stdexcept> // For runtime_error in loadPath
 
 // Link Shlwapi.lib for path functions
 #pragma comment(lib, "Shlwapi.lib")
 
 namespace {
     // Helper function to get the directory containing the current DLL
-    std::string GetDllDirectory() {
+    std::string GetDllDirectoryInternal() { // Renamed slightly
         char dllPath[MAX_PATH] = {0};
         HMODULE hModule = NULL;
 
         // Get handle to *this* DLL module
         if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                              (LPCSTR)&GetDllDirectory, // Address within this module
+                              (LPCSTR)&GetDllDirectoryInternal, // Use new name
                               &hModule)) {
-            LogMessage("GetDllDirectory Error: GetModuleHandleExA failed.");
+            LogMessage("GetDllDirectoryInternal Error: GetModuleHandleExA failed.");
             return "."; // Return current directory as fallback
         }
 
         if (GetModuleFileNameA(hModule, dllPath, MAX_PATH) == 0) {
-            LogMessage("GetDllDirectory Error: GetModuleFileNameA failed.");
+            LogMessage("GetDllDirectoryInternal Error: GetModuleFileNameA failed.");
             return ".";
         }
 
@@ -38,6 +40,25 @@ namespace {
     }
 }
 
+// --- Private Helpers ---
+
+std::string PathManager::getPathDirectory() const {
+    // This could be cached if needed
+    std::string dllDir = GetDllDirectoryInternal();
+    std::filesystem::path pathsDir = std::filesystem::path(dllDir) / "Paths";
+    return pathsDir.string();
+}
+
+std::string PathManager::getFileExtension(PathType type) const {
+    switch (type) {
+        case PathType::GRIND: return ".path";
+        case PathType::VENDOR: return ".vendorpath";
+        default: return ".unknownpath";
+    }
+}
+
+// --- Constructor / Destructor ---
+
 PathManager::PathManager() {
     LogMessage("PathManager: Instance created.");
 }
@@ -46,93 +67,89 @@ PathManager::~PathManager() {
     LogMessage("PathManager: Instance destroyed.");
 }
 
-// Get the name of the currently loaded path
-std::string PathManager::GetCurrentPathName() const {
-    return m_currentPathName;
+// --- Core Path Methods (Modified for PathType) ---
+
+std::string PathManager::getCurrentPathName(PathType type) const {
+    switch(type) {
+        case PathType::GRIND: return m_currentGrindPathName;
+        case PathType::VENDOR: return m_currentVendorPathName;
+        default: return "";
+    }
 }
 
-// List available .path files
-std::vector<std::string> PathManager::ListAvailablePaths() const {
+std::string PathManager::getCurrentVendorName() const {
+    return m_currentVendorName;
+}
+
+// --- ADDED Setter --- 
+void PathManager::setCurrentVendorName(const std::string& name) {
+    m_currentVendorName = name;
+    // Optional: Log here if desired
+}
+// ---------------------
+
+std::vector<std::string> PathManager::ListAvailablePaths(PathType type) const {
     std::vector<std::string> pathFiles;
-    std::string dllDir = GetDllDirectory();
-    char logBuffer[MAX_PATH + 200]; // Increased buffer size for detailed logs
+    std::string targetExtension = getFileExtension(type);
+    std::string pathsDirStr = getPathDirectory();
+    std::filesystem::path pathsDir(pathsDirStr);
 
-    snprintf(logBuffer, sizeof(logBuffer), "PathManager: DLL Directory determined as '%s'", dllDir.c_str());
-    LogMessage(logBuffer);
+    char logBuffer[MAX_PATH + 200]; // Buffer for logging
 
-    std::filesystem::path pathsDir = std::filesystem::path(dllDir) / "Paths";
-    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Looking for paths in '%s'", pathsDir.string().c_str());
+    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Listing paths of type '%s' (Ext: '%s') in '%s'", 
+              (type == PathType::GRIND ? "GRIND" : "VENDOR"), targetExtension.c_str(), pathsDirStr.c_str());
     LogMessage(logBuffer);
 
     if (!std::filesystem::exists(pathsDir)) {
-        snprintf(logBuffer, sizeof(logBuffer), "PathManager: Paths directory '%s' does not exist.", pathsDir.string().c_str());
+        snprintf(logBuffer, sizeof(logBuffer), "PathManager: Paths directory '%s' does not exist.", pathsDirStr.c_str());
         LogMessage(logBuffer);
         return pathFiles;
     }
     if (!std::filesystem::is_directory(pathsDir)) {
-        snprintf(logBuffer, sizeof(logBuffer), "PathManager: '%s' exists but is not a directory.", pathsDir.string().c_str());
+        snprintf(logBuffer, sizeof(logBuffer), "PathManager: '%s' exists but is not a directory.", pathsDirStr.c_str());
         LogMessage(logBuffer);
         return pathFiles;
     }
-
-    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Paths directory '%s' exists and is a directory. Iterating...", pathsDir.string().c_str());
-    LogMessage(logBuffer);
 
     try {
         int count = 0;
         for (const auto& entry : std::filesystem::directory_iterator(pathsDir)) {
             count++;
-            std::string entryPathStr = entry.path().string();
-            std::string entryExtStr = entry.path().extension().string();
-            bool isFile = entry.is_regular_file();
-            bool isCorrectExt = entryExtStr == ".path";
-
-            snprintf(logBuffer, sizeof(logBuffer), "PathManager: Found entry '%s' [File: %d, Ext: '%s', Match: %d]",
-                       entryPathStr.c_str(), isFile, entryExtStr.c_str(), isCorrectExt);
-            LogMessage(logBuffer);
-
-            if (isFile && isCorrectExt) {
+            if (entry.is_regular_file() && entry.path().extension() == targetExtension) {
                 std::string stem = entry.path().stem().string();
-                snprintf(logBuffer, sizeof(logBuffer), "PathManager: Adding path '%s'", stem.c_str());
-                LogMessage(logBuffer);
                 pathFiles.push_back(stem);
             }
         }
-        if (count == 0) {
-             snprintf(logBuffer, sizeof(logBuffer), "PathManager: No entries found within directory '%s'.", pathsDir.string().c_str());
-             LogMessage(logBuffer);
-        }
     } catch (const std::filesystem::filesystem_error& e) {
-        // Buffer already declared above
         snprintf(logBuffer, sizeof(logBuffer), "PathManager Error listing paths: %s", e.what());
         LogMessage(logBuffer);
-    } catch (const std::exception& e) { // Catch other potential exceptions
+    } catch (const std::exception& e) {
         snprintf(logBuffer, sizeof(logBuffer), "PathManager Error listing paths (std::exception): %s", e.what());
         LogMessage(logBuffer);
-    } catch (...) { // Catch anything else
+    } catch (...) {
         LogMessage("PathManager Error listing paths (Unknown exception)");
     }
     
-    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Found %zu paths.", pathFiles.size());
+    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Found %zu paths of type '%s'.", pathFiles.size(), (type == PathType::GRIND ? "GRIND" : "VENDOR"));
     LogMessage(logBuffer);
 
     std::sort(pathFiles.begin(), pathFiles.end());
     return pathFiles;
 }
 
-bool PathManager::loadPath(const std::string& filename) {
-    std::string dllDir = GetDllDirectory();
-    std::filesystem::path fullPath = std::filesystem::path(dllDir) / "Paths" / (filename + ".path");
+bool PathManager::loadPath(const std::string& filename, PathType type) {
+    std::string fileExtension = getFileExtension(type);
+    std::string pathsDirStr = getPathDirectory();
+    std::filesystem::path fullPath = std::filesystem::path(pathsDirStr) / (filename + fileExtension);
 
-    // Declare buffer ONCE at the start of the function scope, large enough for all messages
     char logBuffer[MAX_PATH + 150]; 
 
-    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Attempting to load path from '%s'...", fullPath.string().c_str());
+    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Attempting to load %s path from '%s'...",
+               (type == PathType::GRIND ? "GRIND" : "VENDOR"), fullPath.string().c_str());
     LogMessage(logBuffer);
 
     std::ifstream infile(fullPath);
     if (!infile.is_open()) {
-        // Use the existing logBuffer
         snprintf(logBuffer, sizeof(logBuffer), "PathManager Error: Could not open file '%s' for loading.", fullPath.string().c_str());
         LogMessage(logBuffer);
         return false;
@@ -141,6 +158,22 @@ bool PathManager::loadPath(const std::string& filename) {
     std::vector<Vector3> loadedPath;
     std::string line;
     int lineNum = 0;
+    std::string loadedVendorName = ""; // Temporary variable for vendor name
+
+    // --- MODIFIED VENDOR PATH LOADING ---
+    if (type == PathType::VENDOR) {
+        if (std::getline(infile, line)) {
+            // First line is vendor name
+            loadedVendorName = line;
+            lineNum++;
+        } else {
+            snprintf(logBuffer, sizeof(logBuffer), "PathManager Warning: Vendor path file '%s' is empty or couldn't read vendor name.", fullPath.string().c_str());
+            LogMessage(logBuffer);
+            // Decide if this is an error - for now, allow empty vendor name
+        }
+    }
+    // --- END MODIFICATION ---
+
     while (std::getline(infile, line)) {
         lineNum++;
         std::stringstream ss(line);
@@ -156,30 +189,48 @@ bool PathManager::loadPath(const std::string& filename) {
             point.z = std::stof(segment);
             loadedPath.push_back(point);
         } catch (const std::exception& e) {
-             // Use the existing logBuffer
              snprintf(logBuffer, sizeof(logBuffer), "PathManager Error: Failed to parse line %d ('%s') during load (%s). Skipping.", lineNum, line.c_str(), e.what());
              LogMessage(logBuffer);
+             // Optional: consider returning false on parse error?
         }
     }
     infile.close();
 
-    m_currentPath = loadedPath;
-    m_currentPathName = filename;
-    // Use the existing logBuffer (size MAX_PATH + 150 is sufficient)
-    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Successfully loaded %zu points from '%s'. Path name set to '%s'.", m_currentPath.size(), fullPath.string().c_str(), m_currentPathName.c_str());
+    if (type == PathType::GRIND) {
+        m_grindPath = loadedPath;
+        m_currentGrindPathName = filename;
+        snprintf(logBuffer, sizeof(logBuffer), "PathManager: Successfully loaded %zu GRIND points from '%s'. Path name set to '%s'.", m_grindPath.size(), fullPath.string().c_str(), m_currentGrindPathName.c_str());
+    } else { // VENDOR
+        m_vendorPath = loadedPath;
+        m_currentVendorPathName = filename;
+        m_currentVendorName = loadedVendorName; // <<< ADDED: Assign loaded name
+        snprintf(logBuffer, sizeof(logBuffer), "PathManager: Successfully loaded %zu VENDOR points (Vendor: '%s') from '%s'. Path name set to '%s'.", 
+                 m_vendorPath.size(), m_currentVendorName.c_str(), fullPath.string().c_str(), m_currentVendorPathName.c_str());
+    }
     LogMessage(logBuffer);
     return true;
 }
 
-bool PathManager::savePath(const std::string& filename) const {
-    if (m_currentPath.empty()) {
-        LogMessage("PathManager Warning: Attempted to save an empty path.");
+bool PathManager::savePath(const std::string& filename, PathType type) const {
+    const std::vector<Vector3>* path_to_save = nullptr;
+    const std::string* vendor_name_to_save = nullptr; // Pointer for vendor name
+
+    if (type == PathType::GRIND) {
+        path_to_save = &m_grindPath;
+    } else { // VENDOR
+        path_to_save = &m_vendorPath;
+        vendor_name_to_save = &m_currentVendorName; // <<< ADDED: Get vendor name pointer
+    }
+
+    if (!path_to_save || path_to_save->empty()) {
+        LogMessage("PathManager Warning: Attempted to save an empty or invalid path.");
         return false; 
     }
 
-    std::string dllDir = GetDllDirectory();
-    std::filesystem::path pathsDir = std::filesystem::path(dllDir) / "Paths";
-    std::filesystem::path fullPath = pathsDir / (filename + ".path");
+    std::string fileExtension = getFileExtension(type);
+    std::string pathsDirStr = getPathDirectory();
+    std::filesystem::path pathsDir(pathsDirStr);
+    std::filesystem::path fullPath = pathsDir / (filename + fileExtension);
     char logBuffer[MAX_PATH + 100]; // Buffer for formatted logs
 
     try {
@@ -199,7 +250,8 @@ bool PathManager::savePath(const std::string& filename) const {
         return false;
     }
     
-    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Attempting to save %zu points to '%s'...", m_currentPath.size(), fullPath.string().c_str());
+    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Attempting to save %zu %s points to '%s'...", 
+               path_to_save->size(), (type == PathType::GRIND ? "GRIND" : "VENDOR"), fullPath.string().c_str());
     LogMessage(logBuffer);
     std::ofstream outfile(fullPath);
     if (!outfile.is_open()) {
@@ -208,7 +260,13 @@ bool PathManager::savePath(const std::string& filename) const {
         return false;
     }
 
-    for (const auto& p : m_currentPath) {
+    // --- MODIFIED VENDOR PATH SAVING ---
+    if (type == PathType::VENDOR && vendor_name_to_save) {
+        outfile << *vendor_name_to_save << "\n"; // Write vendor name first
+    }
+    // --- END MODIFICATION ---
+
+    for (const auto& p : *path_to_save) {
         outfile << p.x << "," << p.y << "," << p.z << "\n";
     }
 
@@ -220,32 +278,55 @@ bool PathManager::savePath(const std::string& filename) const {
          return false;
     }
 
-    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Successfully saved path to '%s'.", fullPath.string().c_str());
+    snprintf(logBuffer, sizeof(logBuffer), "PathManager: Successfully saved %s path to '%s'.", (type == PathType::GRIND ? "GRIND" : "VENDOR"), fullPath.string().c_str());
     LogMessage(logBuffer);
     return true;
 }
 
-void PathManager::setPath(const std::vector<Vector3>& path) {
-    m_currentPath = path;
+void PathManager::setPath(const std::vector<Vector3>& path, PathType type) {
     char msg[100];
-    snprintf(msg, sizeof(msg), "PathManager: Path set with %zu points.", path.size());
+    if (type == PathType::GRIND) {
+        m_grindPath = path;
+        // Don't clear name here, recorder doesn't know the name
+        snprintf(msg, sizeof(msg), "PathManager: GRIND Path set with %zu points.", path.size());
+    } else { // VENDOR
+        m_vendorPath = path;
+        m_currentVendorName.clear(); // <<< ADDED: Clear vendor name when path is set directly
+        // Don't clear path name here
+        snprintf(msg, sizeof(msg), "PathManager: VENDOR Path set with %zu points.", path.size());
+    }
     LogMessage(msg);
 }
 
-const std::vector<Vector3>& PathManager::getPath() const {
-    return m_currentPath;
-}
-
-void PathManager::clearPath() {
-    if (!m_currentPath.empty()) {
-        m_currentPath.clear();
-        m_currentPathName.clear(); // Clear the name too
-        LogMessage("PathManager: Path cleared.");
-    } else {
-        // LogMessage("PathManager: ClearPath called on empty path."); // Optional
+const std::vector<Vector3>& PathManager::getPath(PathType type) const {
+    if (type == PathType::GRIND) {
+        return m_grindPath;
+    } else { // VENDOR
+        return m_vendorPath;
     }
 }
 
-bool PathManager::hasPath() const {
-    return !m_currentPath.empty();
+void PathManager::clearPath(PathType type) {
+    if (type == PathType::GRIND) {
+        if (!m_grindPath.empty()) {
+            m_grindPath.clear();
+            m_currentGrindPathName.clear();
+            LogMessage("PathManager: GRIND Path cleared.");
+        }
+    } else { // VENDOR
+        if (!m_vendorPath.empty()) {
+            m_vendorPath.clear();
+            m_currentVendorPathName.clear();
+            m_currentVendorName.clear(); // <<< ADDED: Clear vendor name too
+            LogMessage("PathManager: VENDOR Path cleared.");
+        }
+    }
+}
+
+bool PathManager::hasPath(PathType type) const {
+     if (type == PathType::GRIND) {
+        return !m_grindPath.empty();
+    } else { // VENDOR
+        return !m_vendorPath.empty();
+    }
 } 
